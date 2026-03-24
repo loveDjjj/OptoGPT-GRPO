@@ -1,6 +1,6 @@
 results/
 output/
-models/
+model/
 .claude/
 .vscode/
 **/__pycache__/
