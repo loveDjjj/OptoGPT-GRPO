@@ -1,0 +1,33 @@
+results/
+output/
+models/
+.claude/
+.vscode/
+**/__pycache__/
+generated_samples/
+# A. 忽略指定路径文件夹（仅仓库根目录）
+public/
+checkpoints/
+outputs/
+
+# B. 忽略项目下所有同名文件夹（任意层级）
+**/__pycache__/
+**/.ipynb_checkpoints/
+**/.pytest_cache/
+**/wandb/
+
+# C. 忽略特定文件后缀（全项目）
+*.log
+*.tmp
+
+# D. 忽略指定路径下某类文件
+logs/*.log
+outputs/**/*.png
+
+# E. 仅忽略某个文件
+config.yaml
+.env
+
+# F. 忽略全部，但保留某个文件
+data/*
+!data/README.md
