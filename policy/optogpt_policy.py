@@ -170,6 +170,15 @@ class OptoGPTPolicy(nn.Module):
             return src
         return src.expand(batch_size, -1, -1).contiguous()
 
+    def targets_to_tensor_batch(self, spectra: Sequence[Sequence[float]]) -> torch.Tensor:
+        """Stack a batch of potentially different target spectra."""
+
+        if not spectra:
+            return torch.empty((0, 1, self.spec_dim), dtype=torch.float32, device=self.device)
+        adapted = [self.adapt_target_spectrum(spectrum) for spectrum in spectra]
+        src = torch.from_numpy(np.asarray(adapted, dtype=np.float32)).to(device=self.device, dtype=torch.float32)
+        return src.unsqueeze(1)
+
     def prompt_ids(self, start_symbol: str = "BOS", start_mat: Optional[str] = None) -> List[int]:
         """Build the decoder prompt used to start autoregressive generation."""
 
@@ -180,6 +189,19 @@ class OptoGPTPolicy(nn.Module):
 
     def token_id_to_str(self, token_id: int) -> str:
         return self.struc_index_dict[int(token_id)]
+
+    @staticmethod
+    def _combine_seed_sequence(seeds: Optional[Sequence[Optional[int]]]) -> Optional[int]:
+        """Derive one deterministic seed for a mixed-target sampling batch."""
+
+        if seeds is None:
+            return None
+        combined = 1469598103934665603
+        for idx, seed in enumerate(seeds):
+            value = 0 if seed is None else int(seed)
+            combined ^= (value + 0x9E3779B97F4A7C15 + idx) & 0xFFFFFFFFFFFFFFFF
+            combined = (combined * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        return int(combined % (2**63 - 1))
 
     def _filtered_distribution(
         self,
@@ -346,6 +368,51 @@ class OptoGPTPolicy(nn.Module):
             return []
 
         src = self.target_to_tensor_batch(target_spectrum, batch_size=num_samples)
+        target_indices = [target_index] * num_samples
+        candidate_indices = [candidate_offset + sample_idx for sample_idx in range(num_samples)]
+        return self._decode_from_src_batch(
+            src=src,
+            decode_config=decode_config,
+            target_indices=target_indices,
+            candidate_indices=candidate_indices,
+            rng=rng,
+        )
+
+    def _sample_multi_target_batch(
+        self,
+        target_spectra: Sequence[Sequence[float]],
+        decode_config: DecodeConfig,
+        target_indices: Sequence[Optional[int]],
+        candidate_indices: Sequence[int],
+        rng: Optional[torch.Generator] = None,
+    ) -> List[RolloutSample]:
+        """Decode one mixed batch where each row can use a different target."""
+
+        if not target_spectra:
+            return []
+        src = self.targets_to_tensor_batch(target_spectra)
+        return self._decode_from_src_batch(
+            src=src,
+            decode_config=decode_config,
+            target_indices=target_indices,
+            candidate_indices=candidate_indices,
+            rng=rng,
+        )
+
+    def _decode_from_src_batch(
+        self,
+        src: torch.Tensor,
+        decode_config: DecodeConfig,
+        target_indices: Sequence[Optional[int]],
+        candidate_indices: Sequence[int],
+        rng: Optional[torch.Generator] = None,
+    ) -> List[RolloutSample]:
+        """Shared autoregressive decode loop for homogeneous or mixed targets."""
+
+        num_samples = int(src.size(0))
+        if len(target_indices) != num_samples or len(candidate_indices) != num_samples:
+            raise ValueError("target_indices and candidate_indices must match the batch size.")
+
         prompt_ids = self.prompt_ids(
             start_symbol=decode_config.start_symbol,
             start_mat=decode_config.start_mat,
@@ -366,9 +433,10 @@ class OptoGPTPolicy(nn.Module):
         active_mask = torch.ones(num_samples, dtype=torch.bool, device=self.device)
 
         with torch.no_grad():
-            # All candidates in this batch share the same target spectrum. We
-            # keep one decoding loop over sequence length, but every step is
-            # evaluated in parallel across the whole candidate batch.
+            # One decode loop is kept over sequence length, while every step is
+            # evaluated in parallel across the whole candidate batch. Rows in
+            # the batch may correspond to the same target or to different
+            # targets depending on the caller.
             while ys.size(1) < generation_limit and bool(active_mask.any().item()):
                 trg_mask = Variable(subsequent_mask(ys.size(1)).type_as(src.data)).to(self.device)
                 out = self.model(src, ys, None, trg_mask)
@@ -414,8 +482,8 @@ class OptoGPTPolicy(nn.Module):
         for sample_idx in range(num_samples):
             samples.append(
                 RolloutSample(
-                    target_index=target_index,
-                    candidate_index=candidate_offset + sample_idx,
+                    target_index=target_indices[sample_idx],
+                    candidate_index=int(candidate_indices[sample_idx]),
                     prompt_ids=list(prompt_ids),
                     token_ids=generated_ids[sample_idx],
                     tokens=generated_tokens[sample_idx],
@@ -465,6 +533,62 @@ class OptoGPTPolicy(nn.Module):
             )
         return samples
 
+    def sample_group_multi_target(
+        self,
+        target_spectra: Sequence[Sequence[float]],
+        num_samples_per_target: int,
+        decode_config: DecodeConfig,
+        target_indices: Optional[Sequence[Optional[int]]] = None,
+        seeds: Optional[Sequence[Optional[int]]] = None,
+    ) -> List[RolloutSample]:
+        """Sample rollout groups for many targets with shared batched decoding."""
+
+        if num_samples_per_target <= 0 or not target_spectra:
+            return []
+
+        target_count = len(target_spectra)
+        resolved_target_indices = (
+            list(target_indices)
+            if target_indices is not None
+            else [int(idx) for idx in range(target_count)]
+        )
+        if len(resolved_target_indices) != target_count:
+            raise ValueError("target_indices must match target_spectra length.")
+        if seeds is not None and len(seeds) != target_count:
+            raise ValueError("seeds must match target_spectra length.")
+
+        generator = None
+        combined_seed = self._combine_seed_sequence(seeds)
+        if combined_seed is not None:
+            generator = torch.Generator(device=self.device.type)
+            generator.manual_seed(combined_seed)
+
+        effective_batch_size = int(decode_config.batch_size or (target_count * num_samples_per_target))
+        effective_batch_size = max(1, effective_batch_size)
+
+        expanded_spectra: List[Sequence[float]] = []
+        expanded_target_indices: List[Optional[int]] = []
+        expanded_candidate_indices: List[int] = []
+        for candidate_index in range(num_samples_per_target):
+            for target_spectrum, target_index in zip(target_spectra, resolved_target_indices):
+                expanded_spectra.append(target_spectrum)
+                expanded_target_indices.append(target_index)
+                expanded_candidate_indices.append(candidate_index)
+
+        samples: List[RolloutSample] = []
+        for start in range(0, len(expanded_spectra), effective_batch_size):
+            stop = start + effective_batch_size
+            samples.extend(
+                self._sample_multi_target_batch(
+                    target_spectra=expanded_spectra[start:stop],
+                    decode_config=decode_config,
+                    target_indices=expanded_target_indices[start:stop],
+                    candidate_indices=expanded_candidate_indices[start:stop],
+                    rng=generator,
+                )
+            )
+        return samples
+
     def evaluate_sequence_logprobs(
         self,
         target_spectrum: Sequence[float],
@@ -499,11 +623,35 @@ class OptoGPTPolicy(nn.Module):
         - reference log-probs from the frozen anchor model.
         """
 
+        return self.sequence_logprobs_multi_target_batch_tensor(
+            target_spectra=[target_spectrum for _ in range(len(token_id_groups))],
+            token_id_groups=token_id_groups,
+            start_symbol=start_symbol,
+            start_mat=start_mat,
+            model=model,
+            require_grad=require_grad,
+            batch_size=batch_size,
+        )
+
+    def sequence_logprobs_multi_target_batch_tensor(
+        self,
+        target_spectra: Sequence[Sequence[float]],
+        token_id_groups: Sequence[Sequence[int]],
+        start_symbol: str = "BOS",
+        start_mat: Optional[str] = None,
+        model: Optional[nn.Module] = None,
+        require_grad: bool = False,
+        batch_size: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Recompute log-probabilities for many sequences with many targets."""
+
         sequences = [[int(token_id) for token_id in token_ids] for token_ids in token_id_groups]
         batch_count = len(sequences)
         if batch_count == 0:
             empty = torch.empty((0, 0), dtype=torch.float32, device=self.device)
             return empty, empty.to(dtype=torch.bool)
+        if len(target_spectra) != batch_count:
+            raise ValueError("target_spectra must match token_id_groups length.")
 
         prompt_ids = self.prompt_ids(start_symbol=start_symbol, start_mat=start_mat)
         prompt_len = len(prompt_ids)
@@ -526,8 +674,9 @@ class OptoGPTPolicy(nn.Module):
         with grad_context:
             for start in range(0, batch_count, effective_batch_size):
                 batch_sequences = sequences[start : start + effective_batch_size]
+                batch_target_spectra = target_spectra[start : start + effective_batch_size]
                 current_batch = len(batch_sequences)
-                src = self.target_to_tensor_batch(target_spectrum, batch_size=current_batch)
+                src = self.targets_to_tensor_batch(batch_target_spectra)
                 tgt_input = torch.full(
                     (current_batch, max_input_len),
                     pad_id,

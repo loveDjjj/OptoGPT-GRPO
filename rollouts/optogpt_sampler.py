@@ -35,6 +35,21 @@ def rollout_to_record(sample: RolloutSample) -> Dict[str, Any]:
     return asdict(sample)
 
 
+def _select_unique_samples(
+    raw_samples: Sequence[RolloutSample],
+    unique_candidates: int,
+) -> tuple[List[RolloutSample], int]:
+    seen = set()
+    unique_samples: List[RolloutSample] = []
+    for sample in raw_samples:
+        key = structure_key(sample.structure_tokens)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_samples.append(sample)
+    return unique_samples[:unique_candidates], len(seen)
+
+
 def sample_rollout_group(
     policy: OptoGPTPolicy,
     target_spectrum: Sequence[float],
@@ -60,33 +75,61 @@ def sample_unique_rollout_group(
     target_index: int | None = None,
     seed: int | None = None,
 ) -> SampleGroupResult:
+    results = sample_unique_rollout_groups(
+        policy=policy,
+        target_spectra=[target_spectrum],
+        sampling_config=sampling_config,
+        target_indices=[target_index],
+        seeds=[seed],
+    )
+    return results[0]
+
+
+def sample_unique_rollout_groups(
+    policy: OptoGPTPolicy,
+    target_spectra: Sequence[Sequence[float]],
+    sampling_config: Mapping[str, Any],
+    target_indices: Sequence[int | None] | None = None,
+    seeds: Sequence[int | None] | None = None,
+) -> List[SampleGroupResult]:
     oversample_count = int(sampling_config.get("oversample_count", sampling_config.get("candidates_per_target", 8)))
     unique_candidates = int(sampling_config.get("unique_candidates", sampling_config.get("candidates_per_target", 8)))
-    raw_samples = sample_rollout_group(
-        policy=policy,
-        target_spectrum=target_spectrum,
-        num_candidates=oversample_count,
-        sampling_config=sampling_config,
-        target_index=target_index,
-        seed=seed,
+    decode_config = decode_config_from_dict(sampling_config, max_len=policy.max_len)
+    resolved_target_indices = (
+        list(target_indices)
+        if target_indices is not None
+        else [int(idx) for idx in range(len(target_spectra))]
+    )
+    raw_samples = policy.sample_group_multi_target(
+        target_spectra=target_spectra,
+        num_samples_per_target=oversample_count,
+        decode_config=decode_config,
+        target_indices=resolved_target_indices,
+        seeds=seeds,
     )
 
-    seen = set()
-    unique_samples: List[RolloutSample] = []
+    raw_sample_map = {target_index: [] for target_index in resolved_target_indices}
     for sample in raw_samples:
-        key = structure_key(sample.structure_tokens)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_samples.append(sample)
+        raw_sample_map.setdefault(sample.target_index, []).append(sample)
 
-    selected_samples = unique_samples[:unique_candidates]
-
-    return SampleGroupResult(
-        raw_samples=raw_samples,
-        selected_samples=selected_samples,
-        sampled_count=len(raw_samples),
-        unique_count=len(seen),
-        selected_count=len(selected_samples),
-        duplicate_count=max(0, len(raw_samples) - len(seen)),
-    )
+    results: List[SampleGroupResult] = []
+    for target_index in resolved_target_indices:
+        target_raw_samples = sorted(
+            raw_sample_map.get(target_index, []),
+            key=lambda item: int(item.candidate_index),
+        )
+        selected_samples, unique_count = _select_unique_samples(
+            raw_samples=target_raw_samples,
+            unique_candidates=unique_candidates,
+        )
+        results.append(
+            SampleGroupResult(
+                raw_samples=target_raw_samples,
+                selected_samples=selected_samples,
+                sampled_count=len(target_raw_samples),
+                unique_count=unique_count,
+                selected_count=len(selected_samples),
+                duplicate_count=max(0, len(target_raw_samples) - unique_count),
+            )
+        )
+    return results

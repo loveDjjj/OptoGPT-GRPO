@@ -20,7 +20,7 @@
 
 experiment:
   # Run name. Output directory becomes outputs/<name>_<timestamp>
-  name: grpo_gate_dataset_5090_large
+  name: grpo_gate_dataset_5090_fast
   # Global random seed
   seed: 42
 
@@ -42,10 +42,10 @@ target:
   mode: gate_dataset
   # Number of training targets
   # Keep this moderate. Training samples targets randomly each step.
-  train_count: 1024
+  train_count: 512
   # Number of fixed evaluation targets
   # Larger eval sets improve confidence but slow periodic evaluation.
-  eval_count: 64
+  eval_count: 32
   train_seed: 42
   eval_seed: 43
   # Wavelength range in um, i.e. 400-1100 nm
@@ -67,20 +67,22 @@ target:
   # R_target = 1 - A_target
 
 sampling:
-  # Oversample count per target before exact deduplication
-  # Increased from 1024 to 1536 to get richer unique candidates.
-  oversample_count: 1536
-  # Number of unique structures kept for GRPO per target
-  # Increased from 64 to 96 for stronger group signal.
-  unique_candidates: 96
-  # Batched decode size for OptoGPT sampling
-  # With a 63.86M-parameter model, 512 is reasonable on 32 GB VRAM.
-  batch_size: 512
+  # Oversample count per target before exact deduplication.
+  # Set equal to sampling.batch_size so one target can be decoded in one large
+  # batch, which improves utilization and reduces chunk overhead.
+  oversample_count: 1024
+  # Number of unique structures kept for GRPO per target.
+  # Reduced from 96 to 64 to speed up GRPO logprob recomputation.
+  unique_candidates: 64
+  # Batched decode size for OptoGPT sampling.
+  # With the current model size, 1024 is a good high-throughput target on 32 GB
+  # VRAM, while still keeping the experiment scale smaller overall.
+  batch_size: 1024
   # Decode mode: greedy / top-k / sample
   decode: top-k
   # Slightly wider sampling support to improve unique-structure yield
-  top_k: 24
-  top_p: 0.92
+  top_k: 20
+  top_p: 0.90
   temperature: 1.0
   start_symbol: BOS
   # Optional fixed material token after BOS; null means no forcing
@@ -96,10 +98,9 @@ tmm:
   polarization: 0
   # Optional material alias map, e.g. {Ag: Ag_HZ}
   material_aliases: {}
-  # TMM batch size
-  # A train step can flatten about target_batch_size * unique_candidates
-  # structures. With 6 * 96 ~= 576 candidate structures at the high end,
-  # 256 is a good throughput-oriented chunk size.
+  # TMM batch size.
+  # With target_batch_size=4 and unique_candidates=64, one train step will
+  # usually flatten at most about 256 structures.
   batch_size: 256
   # Pad each TMM batch to its local max layer count
   pad_to_max_layers: true
@@ -117,43 +118,44 @@ reward:
   physical_tolerance: 0.01
 
 grpo:
-  # Total optimizer steps
-  # Increased from 1500 to 2000 to give the shared policy more exposure.
-  steps: 2000
-  # Number of targets sampled per optimizer step
-  # Increased from 4 to 6. This is a meaningful jump in GPU work while still
-  # being much safer than jumping straight to 8 or 10.
-  target_batch_size: 6
+  # Total optimizer steps.
+  # Smaller than the previous setting to reduce total wall-clock time.
+  steps: 1000
+  # Number of targets sampled per optimizer step.
+  # Kept moderate because targets are still processed mostly sequentially in the
+  # current trainer, so increasing this does not improve utilization as much as
+  # increasing sampling.batch_size does.
+  target_batch_size: 4
   # Candidates used per target for GRPO update
-  group_size: 96
+  group_size: 64
   # Full eval interval
   # Keep it moderate because eval also runs sampling + dedup + TMM.
-  eval_interval: 250
+  eval_interval: 200
   # Full-parameter RL is still sensitive; keep LR stable
   learning_rate: 5.0e-6
   clip_eps: 0.2
   kl_beta: 0.02
   max_grad_norm: 1.0
-  # Batch size for current/reference logprob recomputation
-  # Set >= group_size so a whole target group fits in one pass.
-  logprob_batch_size: 128
+  # Batch size for current/reference logprob recomputation.
+  # One whole target group fits in one pass.
+  logprob_batch_size: 64
 
 evaluation:
-  # Target chunk size during evaluation
-  # No backward graph here, so this can be larger than train target_batch_size.
-  target_batch_size: 12
+  # Target chunk size during evaluation.
+  # Evaluation is inference-only, so this can be slightly larger.
+  target_batch_size: 8
   # Number of training targets to visualize before/after training
-  train_compare_count: 16
+  train_compare_count: 8
   # Seed for selecting the fixed train comparison subset
   train_compare_seed: 31415
 
 plotting:
   save_eval_plots: true
   # Number of eval targets to draw before/after plots for
-  eval_plot_limit: 16
+  eval_plot_limit: 8
   save_train_plots: true
   # Number of train-subset targets to draw before/after plots for
-  train_plot_limit: 16
+  train_plot_limit: 8
   save_eval_curve: true
 
 checkpoints:
@@ -168,7 +170,7 @@ logging:
   # Show progress bars for eval / before-after comparison passes
   eval_progress_bar: true
   # Print one concise training status line every N steps
-  log_interval: 10
+  log_interval: 20
   save_targets: true
   # Large RL runs generate huge rollout logs. Keep this off by default.
   save_rollouts: false

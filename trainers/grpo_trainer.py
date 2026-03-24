@@ -28,7 +28,7 @@ except ImportError:
 
 from policy.optogpt_policy import OptoGPTPolicy
 from rewards.tmm_reward import evaluate_structures_with_tmm
-from rollouts.optogpt_sampler import sample_unique_rollout_group
+from rollouts.optogpt_sampler import sample_unique_rollout_groups
 from utils.logging import write_summary_csv
 from utils.plotting import save_before_after_plot, save_metric_curve
 
@@ -310,6 +310,44 @@ class GRPOTrainer:
             "mean_ratio": float(mean_ratio_per_sample[valid_sample_mask].mean().detach().cpu().item()),
         }
 
+    def _flatten_target_batches_for_joint_loss(
+        self,
+        target_batches: Sequence[Mapping[str, Any]],
+    ) -> tuple[List[Mapping[str, Any]], List[Sequence[float]], torch.Tensor, List[tuple[int, int]]]:
+        """Prepare a mixed-target batch while keeping per-target grouping metadata."""
+
+        flat_records: List[Mapping[str, Any]] = []
+        flat_target_spectra: List[Sequence[float]] = []
+        flat_advantages: List[float] = []
+        group_slices: List[tuple[int, int]] = []
+
+        for target_batch in target_batches:
+            records = target_batch["records"]
+            if not records:
+                continue
+
+            usable_records = list(records[: min(self.group_size, len(records))])
+            rewards = [float(record["reward"]) for record in usable_records]
+            advantages = self._group_advantages(rewards)
+            effective_pairs = [
+                (record, float(advantage))
+                for record, advantage in zip(usable_records, advantages)
+                if len(record["token_ids"]) > 0
+            ]
+            if not effective_pairs:
+                continue
+
+            start = len(flat_records)
+            for record, advantage in effective_pairs:
+                flat_records.append(record)
+                flat_target_spectra.append(target_batch["target"]["spectrum"])
+                flat_advantages.append(advantage)
+            stop = len(flat_records)
+            group_slices.append((start, stop))
+
+        advantage_tensor = torch.tensor(flat_advantages, dtype=torch.float32, device=self.device)
+        return flat_records, flat_target_spectra, advantage_tensor, group_slices
+
     def _update_from_target_batches(
         self,
         target_batches: Sequence[Mapping[str, Any]],
@@ -319,29 +357,79 @@ class GRPOTrainer:
         self.policy.model.train()
         self.optimizer.zero_grad()
 
-        total_loss: Optional[torch.Tensor] = None
-        valid_targets = 0
+        flat_records, flat_target_spectra, advantage_tensor, group_slices = self._flatten_target_batches_for_joint_loss(
+            target_batches
+        )
+        if not flat_records:
+            self.policy.model.eval()
+            return {"updated": 0.0, "loss": 0.0, "policy_loss": 0.0, "kl_loss": 0.0, "mean_ratio": 1.0}
+
+        old_logprobs, old_mask = self._records_to_old_logprob_tensor(flat_records)
+        token_id_groups = [record["token_ids"] for record in flat_records]
+        current_logprobs, current_mask = self.policy.sequence_logprobs_multi_target_batch_tensor(
+            target_spectra=flat_target_spectra,
+            token_id_groups=token_id_groups,
+            start_symbol=str(self.config["sampling"].get("start_symbol", "BOS")),
+            start_mat=self.config["sampling"].get("start_mat"),
+            model=self.policy.model,
+            require_grad=True,
+            batch_size=self.logprob_batch_size,
+        )
+        reference_logprobs, reference_mask = self.policy.sequence_logprobs_multi_target_batch_tensor(
+            target_spectra=flat_target_spectra,
+            token_id_groups=token_id_groups,
+            start_symbol=str(self.config["sampling"].get("start_symbol", "BOS")),
+            start_mat=self.config["sampling"].get("start_mat"),
+            model=self.reference_model,
+            require_grad=False,
+            batch_size=self.logprob_batch_size,
+        )
+
+        token_mask = old_mask & current_mask & reference_mask
+        valid_lengths = token_mask.sum(dim=-1)
+        valid_sample_mask = valid_lengths > 0
+        if not bool(valid_sample_mask.any().item()):
+            self.policy.model.eval()
+            return {"updated": 0.0, "loss": 0.0, "policy_loss": 0.0, "kl_loss": 0.0, "mean_ratio": 1.0}
+
+        ratio = torch.exp(current_logprobs - old_logprobs)
+        clipped_ratio = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps)
+        advantage_matrix = advantage_tensor.unsqueeze(-1)
+        token_mask_float = token_mask.to(dtype=current_logprobs.dtype)
+        valid_lengths_float = valid_lengths.clamp_min(1).to(dtype=current_logprobs.dtype)
+
+        policy_gain = torch.min(ratio * advantage_matrix, clipped_ratio * advantage_matrix)
+        policy_loss_per_sample = -(policy_gain * token_mask_float).sum(dim=-1) / valid_lengths_float
+
+        log_ratio_ref = reference_logprobs - current_logprobs
+        kl = torch.exp(log_ratio_ref) - log_ratio_ref - 1.0
+        kl_loss_per_sample = (kl * token_mask_float).sum(dim=-1) / valid_lengths_float
+        mean_ratio_per_sample = (ratio * token_mask_float).sum(dim=-1) / valid_lengths_float
+
+        target_total_losses: List[torch.Tensor] = []
         updated_samples = 0.0
         policy_losses: List[float] = []
         kl_losses: List[float] = []
         mean_ratios: List[float] = []
 
-        for target_batch in target_batches:
-            loss, stats = self._target_loss(target=target_batch["target"], records=target_batch["records"])
-            if loss is None:
+        for start, stop in group_slices:
+            group_valid_mask = valid_sample_mask[start:stop]
+            if not bool(group_valid_mask.any().item()):
                 continue
-            total_loss = loss if total_loss is None else total_loss + loss
-            valid_targets += 1
-            updated_samples += float(stats["updated"])
-            policy_losses.append(stats["policy_loss"])
-            kl_losses.append(stats["kl_loss"])
-            mean_ratios.append(stats["mean_ratio"])
+            group_policy_loss = policy_loss_per_sample[start:stop][group_valid_mask].mean()
+            group_kl_loss = kl_loss_per_sample[start:stop][group_valid_mask].mean()
+            group_mean_ratio = mean_ratio_per_sample[start:stop][group_valid_mask].mean()
+            target_total_losses.append(group_policy_loss + self.kl_beta * group_kl_loss)
+            updated_samples += float(group_valid_mask.sum().item())
+            policy_losses.append(float(group_policy_loss.detach().cpu().item()))
+            kl_losses.append(float(group_kl_loss.detach().cpu().item()))
+            mean_ratios.append(float(group_mean_ratio.detach().cpu().item()))
 
-        if total_loss is None or valid_targets == 0:
+        if not target_total_losses:
             self.policy.model.eval()
             return {"updated": 0.0, "loss": 0.0, "policy_loss": 0.0, "kl_loss": 0.0, "mean_ratio": 1.0}
 
-        total_loss = total_loss / valid_targets
+        total_loss = torch.stack(target_total_losses).mean()
         if not torch.isfinite(total_loss):
             self.policy.model.eval()
             return {"updated": 0.0, "loss": 0.0, "policy_loss": 0.0, "kl_loss": 0.0, "mean_ratio": 1.0}
@@ -387,21 +475,27 @@ class GRPOTrainer:
 
         sampled_groups: List[Dict[str, Any]] = []
         result_map: Dict[int, Dict[str, Any]] = {}
-        for target in targets:
-            target_id = int(target["target_id"])
+        target_ids = [int(target["target_id"]) for target in targets]
+        sample_seeds: List[int] = []
+        for target_id in target_ids:
             if split == "eval":
                 sample_seed = self._eval_sample_seed(target_id)
             elif split == "train_compare":
                 sample_seed = self._train_compare_sample_seed(target_id)
             else:
                 sample_seed = self._train_sample_seed(target_id, step)
-            sample_result = sample_unique_rollout_group(
-                policy=self.policy,
-                target_spectrum=target["spectrum"],
-                sampling_config=self.config["sampling"],
-                target_index=target_id,
-                seed=sample_seed,
-            )
+            sample_seeds.append(sample_seed)
+
+        sample_results = sample_unique_rollout_groups(
+            policy=self.policy,
+            target_spectra=[target["spectrum"] for target in targets],
+            sampling_config=self.config["sampling"],
+            target_indices=target_ids,
+            seeds=sample_seeds,
+        )
+
+        for target, sample_result in zip(targets, sample_results):
+            target_id = int(target["target_id"])
             sampled_groups.append({"target": target, "sample_result": sample_result})
             result_map[target_id] = {
                 "target": target,
