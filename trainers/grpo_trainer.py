@@ -21,6 +21,10 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
+try:
+    from tqdm.auto import tqdm as _tqdm
+except ImportError:
+    _tqdm = None
 
 from policy.optogpt_policy import OptoGPTPolicy
 from rewards.tmm_reward import evaluate_structures_with_tmm
@@ -30,6 +34,36 @@ from utils.plotting import save_before_after_plot, save_metric_curve
 
 
 RolloutLogger = Optional[Callable[[Dict[str, Any]], None]]
+
+
+class _ProgressHandle:
+    """Minimal wrapper that uses tqdm when available and degrades gracefully."""
+
+    def __init__(self, total: int, desc: str, enabled: bool, leave: bool = True) -> None:
+        self.enabled = bool(enabled and _tqdm is not None)
+        self.desc = desc
+        self.total = int(total)
+        self.current = 0
+        self._bar = _tqdm(total=total, desc=desc, leave=leave, dynamic_ncols=True) if self.enabled else None
+
+    def update(self, n: int = 1) -> None:
+        self.current += int(n)
+        if self._bar is not None:
+            self._bar.update(n)
+
+    def set_postfix(self, values: Mapping[str, Any]) -> None:
+        if self._bar is not None:
+            self._bar.set_postfix(dict(values), refresh=False)
+
+    def write(self, message: str) -> None:
+        if self._bar is not None:
+            self._bar.write(message)
+        else:
+            print(message)
+
+    def close(self) -> None:
+        if self._bar is not None:
+            self._bar.close()
 
 
 class GRPOTrainer:
@@ -91,6 +125,10 @@ class GRPOTrainer:
         self.eval_metrics_filename = str(logging_cfg.get("eval_metrics_filename", "eval_metrics.csv"))
         self.before_eval_filename = str(logging_cfg.get("before_eval_filename", "before_eval.csv"))
         self.after_eval_filename = str(logging_cfg.get("after_eval_filename", "after_eval.csv"))
+        self.console_log = bool(logging_cfg.get("console_log", True))
+        self.progress_bar = bool(logging_cfg.get("progress_bar", True))
+        self.eval_progress_bar = bool(logging_cfg.get("eval_progress_bar", True))
+        self.log_interval = max(1, int(logging_cfg.get("log_interval", 10)))
         self.before_train_compare_filename = str(
             logging_cfg.get("before_train_compare_filename", "before_train_compare.csv")
         )
@@ -107,6 +145,30 @@ class GRPOTrainer:
         for directory in (self.plots_dir, self.checkpoints_dir, self.metrics_dir):
             if directory is not None:
                 directory.mkdir(parents=True, exist_ok=True)
+
+    def _make_progress(
+        self,
+        total: int,
+        desc: str,
+        enabled: bool,
+        leave: bool = True,
+    ) -> _ProgressHandle:
+        return _ProgressHandle(total=total, desc=desc, enabled=enabled, leave=leave)
+
+    def _log(self, message: str, progress: Optional[_ProgressHandle] = None) -> None:
+        if not self.console_log:
+            return
+        if progress is not None:
+            progress.write(message)
+        else:
+            print(message)
+
+    @staticmethod
+    def _fmt_metric(value: float) -> str:
+        value = float(value)
+        if not np.isfinite(value):
+            return "nan"
+        return f"{value:.4f}"
 
     @staticmethod
     def _serialize_record_for_log(record: Mapping[str, Any]) -> Dict[str, Any]:
@@ -446,6 +508,8 @@ class GRPOTrainer:
         split: str,
         phase: str,
         rollout_logger: RolloutLogger = None,
+        show_progress: bool = False,
+        progress_desc: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate a whole split by processing targets in manageable chunks."""
 
@@ -453,6 +517,12 @@ class GRPOTrainer:
         target_chunks = self._chunk_targets(
             targets=targets,
             batch_size=self.eval_target_batch_size if split == "eval" else self.target_batch_size,
+        )
+        progress = self._make_progress(
+            total=len(targets),
+            desc=progress_desc or f"{split}:{phase}",
+            enabled=show_progress and self.eval_progress_bar and len(targets) > 0,
+            leave=False,
         )
         for target_chunk in target_chunks:
             all_results.extend(
@@ -464,6 +534,8 @@ class GRPOTrainer:
                     rollout_logger=rollout_logger,
                 )
             )
+            progress.update(len(target_chunk))
+        progress.close()
         return all_results
 
     def _build_eval_rows(
@@ -611,30 +683,61 @@ class GRPOTrainer:
 
         rng = np.random.default_rng(self.base_seed)
         train_compare_targets = self._select_train_compare_targets(train_targets)
+        train_progress = self._make_progress(
+            total=self.steps,
+            desc="GRPO Train",
+            enabled=self.progress_bar and self.steps > 0,
+            leave=True,
+        )
+
+        self._log(
+            (
+                f"[startup] train_targets={len(train_targets)} eval_targets={len(eval_targets)} "
+                f"train_compare={len(train_compare_targets)} steps={self.steps} "
+                f"target_batch={self.target_batch_size} group_size={self.group_size} "
+                f"oversample={self.config['sampling']['oversample_count']}"
+            ),
+            progress=train_progress,
+        )
 
         # Always benchmark the frozen starting checkpoint on a fixed eval set so
         # before/after comparisons are directly comparable.
+        self._log("[eval-before] running initial evaluation on eval split", progress=train_progress)
         before_results = self._evaluate_split(
             targets=eval_targets,
             step=0,
             split="eval",
             phase="before",
             rollout_logger=rollout_logger,
+            show_progress=True,
+            progress_desc="Eval before",
         )
         before_rows = self._build_eval_rows(before_results, prefix="before")
         before_metric_row = self._build_eval_metric_row(before_results, step=0, split="eval", phase="before")
+        self._log(
+            (
+                f"[eval-before] mean={self._fmt_metric(before_metric_row['mean_error'])} "
+                f"median={self._fmt_metric(before_metric_row['median_error'])} "
+                f"min={self._fmt_metric(before_metric_row['min_error'])} "
+                f"max={self._fmt_metric(before_metric_row['max_error'])}"
+            ),
+            progress=train_progress,
+        )
         eval_metric_rows: List[Dict[str, Any]] = [before_metric_row]
         train_metric_rows: List[Dict[str, Any]] = []
 
         before_train_compare_results: List[Dict[str, Any]] = []
         before_train_compare_rows: List[Dict[str, Any]] = []
         if train_compare_targets:
+            self._log("[train-compare-before] running initial evaluation on train subset", progress=train_progress)
             before_train_compare_results = self._evaluate_split(
                 targets=train_compare_targets,
                 step=0,
                 split="train_compare",
                 phase="before",
                 rollout_logger=rollout_logger,
+                show_progress=True,
+                progress_desc="Train subset before",
             )
             before_train_compare_rows = self._build_eval_rows(before_train_compare_results, prefix="before")
 
@@ -691,20 +794,56 @@ class GRPOTrainer:
                     "mean_ratio": float(update_stats["mean_ratio"]),
                 }
             )
+            current_train_row = train_metric_rows[-1]
+            train_progress.update(1)
+            train_progress.set_postfix(
+                {
+                    "loss": self._fmt_metric(current_train_row["loss"]),
+                    "train_err": self._fmt_metric(current_train_row["mean_train_error"]),
+                    "unique": self._fmt_metric(current_train_row["mean_unique_count"]),
+                }
+            )
+            if step == 1 or step % self.log_interval == 0 or step == self.steps:
+                self._log(
+                    (
+                        f"[train] step={step}/{self.steps} "
+                        f"loss={self._fmt_metric(current_train_row['loss'])} "
+                        f"train_mean={self._fmt_metric(current_train_row['mean_train_error'])} "
+                        f"unique_mean={self._fmt_metric(current_train_row['mean_unique_count'])} "
+                        f"updated={current_train_row['updated']:.0f}"
+                    ),
+                    progress=train_progress,
+                )
 
             if self.eval_interval > 0 and (step % self.eval_interval == 0 or step == self.steps):
+                self._log(f"[eval] step={step} running evaluation on eval split", progress=train_progress)
                 eval_results = self._evaluate_split(
                     targets=eval_targets,
                     step=step,
                     split="eval",
                     phase="eval",
                     rollout_logger=rollout_logger,
+                    show_progress=True,
+                    progress_desc=f"Eval @{step}",
                 )
                 eval_metric_row = self._build_eval_metric_row(eval_results, step=step, split="eval", phase="eval")
                 eval_metric_rows.append(eval_metric_row)
                 current_eval_mean = float(eval_metric_row["mean_error"])
+                self._log(
+                    (
+                        f"[eval] step={step} mean={self._fmt_metric(eval_metric_row['mean_error'])} "
+                        f"median={self._fmt_metric(eval_metric_row['median_error'])} "
+                        f"min={self._fmt_metric(eval_metric_row['min_error'])} "
+                        f"max={self._fmt_metric(eval_metric_row['max_error'])}"
+                    ),
+                    progress=train_progress,
+                )
                 if current_eval_mean < best_eval_mean:
                     best_eval_mean = current_eval_mean
+                    self._log(
+                        f"[checkpoint] new best eval mean error={self._fmt_metric(current_eval_mean)} at step={step}",
+                        progress=train_progress,
+                    )
                     if self.save_best_checkpoint:
                         self._save_policy_checkpoint(
                             path=self._checkpoint_path("best_eval"),
@@ -714,27 +853,41 @@ class GRPOTrainer:
                         )
 
         # Final evaluation uses the same fixed eval set as the initial baseline.
+        self._log("[eval-after] running final evaluation on eval split", progress=train_progress)
         after_results = self._evaluate_split(
             targets=eval_targets,
             step=self.steps,
             split="eval",
             phase="after",
             rollout_logger=rollout_logger,
+            show_progress=True,
+            progress_desc="Eval after",
         )
         after_rows = self._build_eval_rows(after_results, prefix="after")
-        eval_metric_rows.append(
-            self._build_eval_metric_row(after_results, step=self.steps, split="eval", phase="after")
+        after_eval_metric_row = self._build_eval_metric_row(after_results, step=self.steps, split="eval", phase="after")
+        eval_metric_rows.append(after_eval_metric_row)
+        self._log(
+            (
+                f"[eval-after] mean={self._fmt_metric(after_eval_metric_row['mean_error'])} "
+                f"median={self._fmt_metric(after_eval_metric_row['median_error'])} "
+                f"min={self._fmt_metric(after_eval_metric_row['min_error'])} "
+                f"max={self._fmt_metric(after_eval_metric_row['max_error'])}"
+            ),
+            progress=train_progress,
         )
 
         after_train_compare_results: List[Dict[str, Any]] = []
         after_train_compare_rows: List[Dict[str, Any]] = []
         if train_compare_targets:
+            self._log("[train-compare-after] running final evaluation on train subset", progress=train_progress)
             after_train_compare_results = self._evaluate_split(
                 targets=train_compare_targets,
                 step=self.steps,
                 split="train_compare",
                 phase="after",
                 rollout_logger=rollout_logger,
+                show_progress=True,
+                progress_desc="Train subset after",
             )
             after_train_compare_rows = self._build_eval_rows(after_train_compare_results, prefix="after")
 
@@ -828,4 +981,5 @@ class GRPOTrainer:
                     y_label="Mean Absorption RMSE",
                 )
 
+        train_progress.close()
         return summary_rows

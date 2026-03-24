@@ -161,6 +161,14 @@ checkpoints:
   save_final: true
 
 logging:
+  # Print high-level console logs
+  console_log: true
+  # Show the outer training progress bar
+  progress_bar: true
+  # Show progress bars for eval / before-after comparison passes
+  eval_progress_bar: true
+  # Print one concise training status line every N steps
+  log_interval: 10
   save_targets: true
   # Large RL runs generate huge rollout logs. Keep this off by default.
   save_rollouts: false

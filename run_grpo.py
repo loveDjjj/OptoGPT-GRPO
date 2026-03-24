@@ -97,6 +97,12 @@ def main() -> None:
     # Dataset-level RL loads one policy and keeps updating it across many
     # targets. This is the main difference from the earlier single-target
     # optimization experiments.
+    print("Starting GRPO run...")
+    print(f"Run directory: {run_dir}")
+    print(
+        f"Train targets: {len(train_targets)} | Eval targets: {len(eval_targets)} | "
+        f"Device: {config.get('device', 'auto')}"
+    )
     policy = OptoGPTPolicy(config["paths"]["optogpt_checkpoint"], device=config.get("device", "auto"))
     trainer = GRPOTrainer(policy=policy, config=config, run_dir=run_dir)
     summary_rows = trainer.train(
