@@ -29,5 +29,4 @@ config.yaml
 .env
 
 # F. 忽略全部，但保留某个文件
-data/*
 !data/README.md
