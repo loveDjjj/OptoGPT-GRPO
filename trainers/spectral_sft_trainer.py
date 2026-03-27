@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from contextlib import nullcontext
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from datasets import build_distributed_sampler, optogpt_batch_collator
 from evaluators import SpectrumEvaluator
@@ -55,6 +56,7 @@ class SpectralSFTTrainer:
         self.save_best = bool(training_cfg.get("save_best", True))
         self.save_final = bool(training_cfg.get("save_final", True))
         self.console_log = bool(logging_cfg.get("console_log", True))
+        self.show_progress_bar = bool(logging_cfg.get("show_progress_bar", True))
 
         self.train_decode_config = build_decode_config(config["sampling"]["train"], default_max_len=self.model.max_len)
         self.tmm_kwargs = {
@@ -103,6 +105,20 @@ class SpectralSFTTrainer:
         tensor = torch.tensor([float(value)], dtype=torch.float64, device=self.model.device)
         reduced = reduce_tensor(tensor, op="mean")
         return float(reduced.item())
+
+    def _make_progress(self, iterable, total: int, desc: str):
+        """仅在主进程显示按 batch 数量统计的 tqdm 进度条。"""
+
+        if not (self.console_log and self.show_progress_bar and self.dist_ctx.is_main):
+            return iterable
+        return tqdm(
+            iterable,
+            total=total,
+            desc=desc,
+            dynamic_ncols=True,
+            leave=True,
+            unit="batch",
+        )
 
     def _train_batch(
         self,
@@ -219,7 +235,12 @@ class SpectralSFTTrainer:
             epoch_valid_ratios = []
             accum_counter = 0
 
-            for batch in dataloader:
+            progress = self._make_progress(
+                dataloader,
+                total=len(dataloader),
+                desc=f"train epoch {epoch}/{self.epochs}",
+            )
+            for batch in progress:
                 global_step += 1
                 accum_counter += 1
                 batch_objective, batch_spectrum_loss, batch_valid_ratio = self._train_batch(
@@ -241,12 +262,21 @@ class SpectralSFTTrainer:
                     reduced_objective = self._reduce_mean(batch_objective)
                     reduced_spectrum = self._reduce_mean(batch_spectrum_loss)
                     reduced_valid = self._reduce_mean(batch_valid_ratio)
+                    if hasattr(progress, "set_postfix"):
+                        progress.set_postfix(
+                            objective=f"{reduced_objective:.4f}",
+                            spectrum=f"{reduced_spectrum:.4f}",
+                            valid=f"{reduced_valid:.3f}",
+                        )
                     self._log(
                         f"[train] epoch={epoch}/{self.epochs} step={global_step} "
                         f"objective={reduced_objective:.6f} "
                         f"spectrum={reduced_spectrum:.6f} "
                         f"valid={reduced_valid:.4f}"
                     )
+
+            if hasattr(progress, "close"):
+                progress.close()
 
             if accum_counter > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.trainable_parameters(), self.grad_clip_norm)

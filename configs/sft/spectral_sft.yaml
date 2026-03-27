@@ -107,6 +107,8 @@ losses:
 
 logging:
   console_log: true
+  # 是否按 DataLoader 的 batch 数量显示 tqdm 进度条。
+  show_progress_bar: true
 
 distributed:
   timeout_minutes: 30

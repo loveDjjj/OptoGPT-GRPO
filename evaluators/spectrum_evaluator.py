@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from datasets import build_distributed_sampler, optogpt_batch_collator
 from losses import evaluate_generated_structures, masked_mean_negative_logprob
@@ -50,6 +51,7 @@ class SpectrumEvaluator:
         self.metric = str(tmm_cfg.get("metric", config["losses"]["spectrum_metric"]))
         self.materials_dir = str(config["paths"]["materials_dir"])
         self.console_log = bool(logging_cfg.get("console_log", True))
+        self.show_progress_bar = bool(logging_cfg.get("show_progress_bar", True))
 
         self.tmm_kwargs = {
             "wavelength_range_um": tmm_cfg["wavelength_range_um"],
@@ -92,6 +94,20 @@ class SpectrumEvaluator:
     def _plot_output_dir(self, split_name: str) -> Path:
         return self.plots_dir / split_name / f"rank{self.dist_ctx.rank:02d}"
 
+    def _make_progress(self, iterable, total: int, desc: str):
+        """仅在主进程显示按 batch 数量统计的 tqdm 进度条。"""
+
+        if not (self.console_log and self.show_progress_bar and self.dist_ctx.is_main):
+            return iterable
+        return tqdm(
+            iterable,
+            total=total,
+            desc=desc,
+            dynamic_ncols=True,
+            leave=True,
+            unit="batch",
+        )
+
     def evaluate(self, dataset, split_name: str) -> dict | None:
         """执行一次完整评测。"""
 
@@ -125,7 +141,12 @@ class SpectrumEvaluator:
         if self.save_plots:
             plot_output_dir.mkdir(parents=True, exist_ok=True)
 
-        for batch in dataloader:
+        progress = self._make_progress(
+            dataloader,
+            total=len(dataloader),
+            desc=f"eval {split_name}",
+        )
+        for batch in progress:
             spectra = batch["spectra"]
             structure_tokens = batch["structure_tokens"]
             sample_indices = batch["sample_indices"].tolist()
@@ -199,6 +220,16 @@ class SpectrumEvaluator:
                             status=str(spectrum_result["status"]),
                         )
                         plots_saved += 1
+
+            if hasattr(progress, "set_postfix"):
+                progress.set_postfix(
+                    seq=f"{metric_accumulator.sequence_loss_sum / max(metric_accumulator.sample_count, 1):.4f}",
+                    spec=f"{metric_accumulator.spectrum_loss_sum / max(metric_accumulator.sample_count, 1):.4f}",
+                    samples=int(metric_accumulator.sample_count),
+                )
+
+        if hasattr(progress, "close"):
+            progress.close()
 
         merged_metrics = reduce_metric_accumulator(metric_accumulator, device=self.model.device)
         barrier()
