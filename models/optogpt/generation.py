@@ -162,22 +162,41 @@ def generate_structures_for_targets(
     expanded_spectra: List[Sequence[float]] = []
     expanded_target_indices: List[Optional[int]] = []
     expanded_candidate_indices: List[int] = []
-    for candidate_index in range(num_samples_per_target):
-        for target_spectrum, target_index in zip(target_spectra, resolved_target_indices):
-            expanded_spectra.append(target_spectrum)
-            expanded_target_indices.append(target_index)
-            expanded_candidate_indices.append(candidate_index)
+    if torch.is_tensor(target_spectra):
+        if target_spectra.dim() == 1:
+            target_spectra = target_spectra.view(1, -1)
+        expanded_spectra_tensor = target_spectra.repeat((num_samples_per_target, 1))
+        for candidate_index in range(num_samples_per_target):
+            expanded_target_indices.extend(resolved_target_indices)
+            expanded_candidate_indices.extend([candidate_index] * target_count)
+    else:
+        expanded_spectra_tensor = None
+        for candidate_index in range(num_samples_per_target):
+            for target_spectrum, target_index in zip(target_spectra, resolved_target_indices):
+                expanded_spectra.append(target_spectrum)
+                expanded_target_indices.append(target_index)
+                expanded_candidate_indices.append(candidate_index)
 
-    effective_batch_size = int(decode_config.batch_size or len(expanded_spectra))
+    total_expanded_count = (
+        int(expanded_spectra_tensor.size(0))
+        if expanded_spectra_tensor is not None
+        else len(expanded_spectra)
+    )
+    effective_batch_size = int(decode_config.batch_size or total_expanded_count)
     effective_batch_size = max(1, effective_batch_size)
 
     all_samples: List[GeneratedStructure] = []
-    for start in range(0, len(expanded_spectra), effective_batch_size):
+    for start in range(0, total_expanded_count, effective_batch_size):
         stop = start + effective_batch_size
+        src_input = (
+            expanded_spectra_tensor[start:stop]
+            if expanded_spectra_tensor is not None
+            else expanded_spectra[start:stop]
+        )
         all_samples.extend(
             _decode_from_src_batch(
                 model=model,
-                src=model.targets_to_tensor_batch(expanded_spectra[start:stop]),
+                src=model.targets_to_tensor_batch(src_input),
                 decode_config=decode_config,
                 target_indices=expanded_target_indices[start:stop],
                 candidate_indices=expanded_candidate_indices[start:stop],

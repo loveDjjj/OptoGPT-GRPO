@@ -8,7 +8,12 @@ import numpy as np
 
 from physics import calculate_optical_properties_batch
 from physics.spectrum import flatten_rt, is_physical_spectrum, spectrum_error
-from physics.structure import bucket_indices_by_layer_count, pad_tmm_configs_to_max_layers, tokens_to_tmm_config
+from physics.structure import (
+    bucket_indices_by_layer_count,
+    pad_tmm_configs_to_fixed_layers,
+    pad_tmm_configs_to_max_layers,
+    tokens_to_tmm_config,
+)
 
 
 def _normalize_targets(target_spectra: Sequence[Sequence[float]] | Sequence[float], count: int) -> List[np.ndarray]:
@@ -38,6 +43,7 @@ def evaluate_generated_structures(
     return_spectra: bool = True,
     pad_to_max_layers: bool = False,
     bucket_by_layer_count: bool = False,
+    fixed_max_layers: int | None = None,
     pad_material: str = "Air",
     batch_size: int | None = None,
     tmm_debug: bool = False,
@@ -83,7 +89,35 @@ def evaluate_generated_structures(
         return results
 
     grouped_eval_items: List[List[dict]] = []
-    if bucket_by_layer_count:
+    if fixed_max_layers is not None:
+        fixed_max_layers = int(fixed_max_layers)
+        padded_inputs = []
+        for item in valid_items:
+            if item["layer_count"] > fixed_max_layers:
+                results[item["index"]] = {
+                    "index": item["index"],
+                    "structure_tokens": item["structure_tokens"],
+                    "layer_count": item["layer_count"],
+                    "padded_layer_count": fixed_max_layers,
+                    "spectrum_loss": float(invalid_structure_penalty),
+                    "status": f"too_many_layers>{fixed_max_layers}",
+                }
+                continue
+            padded_inputs.append(item)
+
+        if padded_inputs:
+            padded_configs = pad_tmm_configs_to_fixed_layers(
+                [item["config"] for item in padded_inputs],
+                target_layers=fixed_max_layers,
+                pad_material=pad_material,
+            )
+            grouped_eval_items.append(
+                [
+                    dict(item, padded_layer_count=fixed_max_layers, config=config)
+                    for item, config in zip(padded_inputs, padded_configs)
+                ]
+            )
+    elif bucket_by_layer_count:
         index_buckets = bucket_indices_by_layer_count([item["structure_tokens"] for item in valid_items])
         for _, bucket_indices in sorted(index_buckets.items(), key=lambda pair: pair[0]):
             bucket_items = [valid_items[idx] for idx in bucket_indices]

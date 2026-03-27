@@ -141,6 +141,8 @@ class OptoGPTModel(nn.Module):
     def adapt_target_spectrum(self, spectrum: Sequence[float]) -> np.ndarray:
         """把运行时光谱适配到 checkpoint 期望的输入维度。"""
 
+        if torch.is_tensor(spectrum):
+            spectrum = spectrum.detach().cpu().numpy()
         spectrum = np.asarray(spectrum, dtype=np.float32).reshape(-1)
         if spectrum.size == self.spec_dim:
             return spectrum
@@ -165,8 +167,21 @@ class OptoGPTModel(nn.Module):
     def target_to_tensor(self, spectrum: Sequence[float]) -> torch.Tensor:
         """把单条目标光谱转成模型输入张量。"""
 
+        if torch.is_tensor(spectrum):
+            spectrum_tensor = spectrum.detach().to(dtype=torch.float32).reshape(-1)
+            if spectrum_tensor.numel() == 142 and self.spec_dim != 142:
+                half = spectrum_tensor.numel() // 2
+                if self.spec_type == "R":
+                    spectrum_tensor = spectrum_tensor[:half]
+                elif self.spec_type == "T":
+                    spectrum_tensor = spectrum_tensor[half:]
+            if spectrum_tensor.numel() != self.spec_dim:
+                adapted = self.adapt_target_spectrum(spectrum_tensor)
+                spectrum_tensor = torch.from_numpy(adapted)
+            return spectrum_tensor.to(device=self.device, dtype=torch.float32, non_blocking=True).view(1, 1, -1)
+
         adapted = self.adapt_target_spectrum(spectrum)
-        return torch.from_numpy(adapted).to(device=self.device, dtype=torch.float32).view(1, 1, -1)
+        return torch.from_numpy(adapted).to(device=self.device, dtype=torch.float32, non_blocking=True).view(1, 1, -1)
 
     def target_to_tensor_batch(self, spectrum: Sequence[float], batch_size: int) -> torch.Tensor:
         """把同一条光谱复制成 batch。"""
@@ -181,8 +196,43 @@ class OptoGPTModel(nn.Module):
 
         if len(spectra) == 0:
             return torch.empty((0, 1, self.spec_dim), dtype=torch.float32, device=self.device)
+
+        if torch.is_tensor(spectra):
+            spectra_tensor = spectra.detach()
+            if spectra_tensor.dim() == 1:
+                spectra_tensor = spectra_tensor.view(1, -1)
+            if spectra_tensor.dim() != 2:
+                raise ValueError(f"光谱 batch 维度必须是 2，当前为 {tuple(spectra_tensor.shape)}")
+
+            spectra_tensor = spectra_tensor.to(dtype=torch.float32)
+            if spectra_tensor.size(-1) == self.spec_dim:
+                adapted_tensor = spectra_tensor
+            elif spectra_tensor.size(-1) == 142:
+                half = spectra_tensor.size(-1) // 2
+                if self.spec_type == "R":
+                    adapted_tensor = spectra_tensor[:, :half]
+                elif self.spec_type == "T":
+                    adapted_tensor = spectra_tensor[:, half:]
+                elif self.spec_type == "R_T":
+                    adapted_tensor = spectra_tensor
+                else:
+                    raise ValueError(f"不支持的 spec_type: {self.spec_type}")
+            else:
+                adapted = [self.adapt_target_spectrum(spectrum) for spectrum in spectra_tensor]
+                adapted_tensor = torch.from_numpy(np.asarray(adapted, dtype=np.float32))
+
+            if adapted_tensor.size(-1) != self.spec_dim:
+                raise ValueError(
+                    f"适配后的光谱维度 {adapted_tensor.size(-1)} 与 checkpoint 输入维度 {self.spec_dim} 不匹配。"
+                )
+            return adapted_tensor.to(device=self.device, dtype=torch.float32, non_blocking=True).unsqueeze(1)
+
         adapted = [self.adapt_target_spectrum(spectrum) for spectrum in spectra]
-        src = torch.from_numpy(np.asarray(adapted, dtype=np.float32)).to(device=self.device, dtype=torch.float32)
+        src = torch.from_numpy(np.asarray(adapted, dtype=np.float32)).to(
+            device=self.device,
+            dtype=torch.float32,
+            non_blocking=True,
+        )
         return src.unsqueeze(1)
 
     def prompt_ids(self, start_symbol: str = "BOS", start_mat: Optional[str] = None) -> List[int]:

@@ -94,6 +94,22 @@ def pad_tmm_configs_to_max_layers(
     return padded, max_layers
 
 
+def pad_tmm_configs_to_fixed_layers(
+    configs: Sequence[Mapping[str, Sequence[float] | str]],
+    target_layers: int,
+    pad_material: str = "Air",
+) -> List[Dict[str, List[float] | str]]:
+    """把一组结构统一补到固定层数。
+
+    这比“按当前 batch 最大层数补齐”更适合长期批量计算：
+    - 所有 batch 的张量形状固定
+    - 便于稳定调优 TMM batch size
+    - 避免不同 batch 之间反复切换不同 layer shape
+    """
+
+    return [pad_tmm_config(config, target_layers=target_layers, pad_material=pad_material) for config in configs]
+
+
 def bucket_indices_by_layer_count(structure_token_groups: Iterable[Sequence[str]]) -> Dict[int, List[int]]:
     """按层数给结构分桶。"""
 

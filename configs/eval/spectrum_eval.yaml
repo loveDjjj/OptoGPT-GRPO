@@ -31,11 +31,11 @@ data:
   # 可选：只评测前若干条样本，便于快速调试；null 表示全量
   max_train_samples: null
   max_val_samples: null
-  # 若使用 npy 数据，建议至少开到 4；Windows 下也可以逐步试 2/4/8。
-  # 若是 4-8 卡长期评测，Linux + NCCL 的跨卡通信效率通常优于 Windows + Gloo。
-  num_workers: 4
+  # `num_workers > 0` 就是多进程加载。
+  # 这里默认调到 8，优先改善单卡评测时的数据等待；多卡时若 CPU 压力过大，可按每卡 4 往回调。
+  num_workers: 8
   pin_memory: true
-  prefetch_factor: 2
+  prefetch_factor: 4
   # 若未来希望从训练集内部切验证集，可启用该比例
   val_ratio: 0.0
 
@@ -49,13 +49,13 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 64
+    batch_size: 128
 
 evaluation:
   # 需要评测的 split
   splits: [train, val]
-  batch_size: 32
-  scoring_batch_size: 32
+  batch_size: 128
+  scoring_batch_size: 128
   # 是否保存样本级 JSONL。全量数据很大，默认关闭。
   save_samples: false
   # 是否保存目标光谱与生成光谱的可视化对比图。
@@ -72,10 +72,11 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   material_aliases: {}
-  batch_size: 128
+  batch_size: 256
+  # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
-  # 按层数分桶可减少不同结构长度混跑时的 padding 浪费。
-  bucket_by_layer_count: true
+  fixed_max_layers: 20
+  bucket_by_layer_count: false
   pad_material: Air
   debug: false
   # 这里只是为了保持配置结构统一，实际使用的指标由 losses.spectrum_metric 控制。

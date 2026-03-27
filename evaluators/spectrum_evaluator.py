@@ -66,6 +66,7 @@ class SpectrumEvaluator:
             "return_spectra": bool(evaluation_cfg.get("save_predicted_spectra", False) or self.save_plots),
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
             "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
+            "fixed_max_layers": tmm_cfg.get("fixed_max_layers"),
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
             "batch_size": int(tmm_cfg.get("batch_size", self.batch_size)),
             "tmm_debug": bool(tmm_cfg.get("debug", False)),

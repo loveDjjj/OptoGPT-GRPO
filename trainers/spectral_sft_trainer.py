@@ -71,6 +71,7 @@ class SpectralSFTTrainer:
             "return_spectra": False,
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
             "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
+            "fixed_max_layers": tmm_cfg.get("fixed_max_layers"),
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
             "batch_size": int(tmm_cfg.get("batch_size", self.batch_size)),
             "tmm_debug": bool(tmm_cfg.get("debug", False)),
@@ -127,9 +128,12 @@ class SpectralSFTTrainer:
             target_indices=list(sample_indices),
             seeds=[int(self.config["experiment"]["seed"]) + int(sample_index) for sample_index in sample_indices],
         )
-        expanded_spectra = []
-        for _ in range(self.train_num_samples_per_target):
-            expanded_spectra.extend(list(spectra))
+        if torch.is_tensor(spectra):
+            expanded_spectra = spectra.repeat((self.train_num_samples_per_target, 1))
+        else:
+            expanded_spectra = []
+            for _ in range(self.train_num_samples_per_target):
+                expanded_spectra.extend(list(spectra))
         spectrum_results = evaluate_generated_structures(
             structure_token_groups=[item.structure_tokens for item in generated],
             target_spectra=expanded_spectra,

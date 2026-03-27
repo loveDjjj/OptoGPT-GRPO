@@ -26,11 +26,11 @@ data:
   val_structure_path: dataset/Structure_test.npy
   max_train_samples: null
   max_val_samples: 4096
-  # npy 适合配合多 worker 读取；正式多卡训练建议从 4 开始试。
-  # 若使用 Windows，多卡通信只能走 Gloo；4-8 卡正式训练更建议 Linux + NCCL。
-  num_workers: 4
+  # `num_workers > 0` 就是多进程加载。
+  # 这里默认调到 8，优先改善单卡时的数据等待；多卡时若 CPU 压力过大，可按每卡 4 往回调。
+  num_workers: 8
   pin_memory: true
-  prefetch_factor: 2
+  prefetch_factor: 4
   val_ratio: 0.0
 
 sampling:
@@ -43,7 +43,7 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 64
+    batch_size: 128
   eval:
     # 训练过程中的验证仍然使用 greedy，保证指标稳定可比
     decode: greedy
@@ -53,11 +53,12 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 64
+    batch_size: 128
 
 training:
   epochs: 1
-  batch_size: 8
+  # 当前模型不大，单卡吞吐优先把训练 batch 提高到 32。
+  batch_size: 32
   learning_rate: 1.0e-5
   weight_decay: 0.0
   grad_clip_norm: 1.0
@@ -75,8 +76,8 @@ training:
   save_final: true
 
 evaluation:
-  batch_size: 16
-  scoring_batch_size: 16
+  batch_size: 64
+  scoring_batch_size: 64
   save_samples: false
   save_predicted_spectra: false
   splits: [val]
@@ -87,9 +88,11 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   material_aliases: {}
-  batch_size: 128
+  batch_size: 256
+  # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
-  bucket_by_layer_count: true
+  fixed_max_layers: 20
+  bucket_by_layer_count: false
   pad_material: Air
   debug: false
   # 当前默认直接比较拼接后的 R/T 光谱，不再使用吸收率误差。
