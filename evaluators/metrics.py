@@ -34,6 +34,29 @@ class MetricAccumulator:
         if status == "ok":
             self.valid_structure_count += 1
 
+    def update_batch(
+        self,
+        sequence_losses: np.ndarray,
+        spectrum_losses: np.ndarray,
+        ok_mask: np.ndarray,
+    ) -> None:
+        """批量更新指标，减少 Python 逐样本循环开销。"""
+
+        if sequence_losses.size == 0:
+            return
+        sequence_losses = np.asarray(sequence_losses, dtype=np.float64).reshape(-1)
+        spectrum_losses = np.asarray(spectrum_losses, dtype=np.float64).reshape(-1)
+        ok_mask = np.asarray(ok_mask, dtype=np.bool_).reshape(-1)
+
+        self.sample_count += int(sequence_losses.size)
+        self.valid_structure_count += int(ok_mask.sum())
+        self.sequence_loss_sum += float(sequence_losses.sum())
+        self.spectrum_loss_sum += float(spectrum_losses.sum())
+        self.min_sequence_loss = min(self.min_sequence_loss, float(sequence_losses.min()))
+        self.max_sequence_loss = max(self.max_sequence_loss, float(sequence_losses.max()))
+        self.min_spectrum_loss = min(self.min_spectrum_loss, float(spectrum_losses.min()))
+        self.max_spectrum_loss = max(self.max_spectrum_loss, float(spectrum_losses.max()))
+
     def to_tensor(self, device: torch.device) -> torch.Tensor:
         return torch.tensor(
             [
@@ -168,6 +191,42 @@ class DistributionPlotAccumulator:
         target_idx = self._clip_length(target_length)
         generated_idx = self._clip_length(generated_length)
         self.length_heatmap[target_idx, generated_idx] += 1
+
+    def update_batch(
+        self,
+        r_rmse: np.ndarray,
+        t_rmse: np.ndarray,
+        sequence_loss: np.ndarray,
+        generated_length: np.ndarray,
+        target_length: np.ndarray,
+    ) -> None:
+        """批量累计直方图/热力图计数。"""
+
+        r_rmse = np.asarray(r_rmse, dtype=np.float64).reshape(-1)
+        t_rmse = np.asarray(t_rmse, dtype=np.float64).reshape(-1)
+        sequence_loss = np.asarray(sequence_loss, dtype=np.float64).reshape(-1)
+        generated_length = np.asarray(generated_length, dtype=np.int64).reshape(-1)
+        target_length = np.asarray(target_length, dtype=np.int64).reshape(-1)
+
+        r_indices = np.asarray(
+            [self._bin_index(value, self.rt_rmse_bins, self.rt_rmse_max) for value in r_rmse],
+            dtype=np.int64,
+        )
+        t_indices = np.asarray(
+            [self._bin_index(value, self.rt_rmse_bins, self.rt_rmse_max) for value in t_rmse],
+            dtype=np.int64,
+        )
+        seq_indices = np.asarray(
+            [self._bin_index(value, self.sequence_loss_bins, self.sequence_loss_max) for value in sequence_loss],
+            dtype=np.int64,
+        )
+        target_indices = np.clip(target_length, 0, self.length_max)
+        generated_indices = np.clip(generated_length, 0, self.length_max)
+
+        np.add.at(self.r_rmse_hist, r_indices, 1)
+        np.add.at(self.t_rmse_hist, t_indices, 1)
+        np.add.at(self.sequence_loss_hist, seq_indices, 1)
+        np.add.at(self.length_heatmap, (target_indices, generated_indices), 1)
 
     def to_device_tensors(self, device: torch.device) -> dict[str, torch.Tensor]:
         return {

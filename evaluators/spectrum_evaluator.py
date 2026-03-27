@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 from datasets import build_distributed_sampler, optogpt_batch_collator
 from losses import evaluate_generated_structures, masked_mean_negative_logprob
 from models.optogpt import build_decode_config, generate_structures_for_targets, sequence_logprobs_multi_target_batch_tensor
-from physics.spectrum import spectrum_error
+from physics.spectrum import split_rt_spectrum
 from utils.dist import DistributedContext, barrier
 from utils.logging import append_jsonl, write_summary_csv
 from utils.plotting import save_eval_distribution_summary, save_spectrum_comparison_plot
@@ -129,6 +129,22 @@ class SpectrumEvaluator:
             unit="batch",
         )
 
+    def _batch_rt_rmse(
+        self,
+        predicted_spectra: np.ndarray,
+        target_spectra: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """批量计算每条样本的 R-RMSE 和 T-RMSE。"""
+
+        half = predicted_spectra.shape[-1] // 2
+        pred_r = predicted_spectra[:, :half]
+        pred_t = predicted_spectra[:, half:]
+        target_r = target_spectra[:, :half]
+        target_t = target_spectra[:, half:]
+        r_rmse = np.sqrt(np.mean(np.square(pred_r - target_r), axis=1))
+        t_rmse = np.sqrt(np.mean(np.square(pred_t - target_t), axis=1))
+        return r_rmse.astype(np.float32, copy=False), t_rmse.astype(np.float32, copy=False)
+
     def evaluate(self, dataset, split_name: str) -> dict | None:
         """执行一次完整评测。"""
 
@@ -193,11 +209,11 @@ class SpectrumEvaluator:
                 require_grad=False,
                 batch_size=self.scoring_batch_size,
             )
-            sequence_losses = masked_mean_negative_logprob(
+            sequence_losses_tensor = masked_mean_negative_logprob(
                 token_logprobs=logprobs,
                 token_mask=token_mask,
                 normalize_by_length=True,
-            ).detach().cpu().tolist()
+            )
 
             generated = generate_structures_for_targets(
                 model=self.model,
@@ -213,61 +229,83 @@ class SpectrumEvaluator:
                 **self.tmm_kwargs,
             )
 
-            for sample_index, gt_tokens, target_spectrum, sequence_loss, generated_item, spectrum_result in zip(
-                sample_indices,
-                structure_tokens,
-                spectra,
-                sequence_losses,
-                generated,
-                spectrum_results,
-            ):
-                metric_accumulator.update(
-                    sequence_loss=float(sequence_loss),
-                    spectrum_loss=float(spectrum_result["spectrum_loss"]),
-                    status=str(spectrum_result["status"]),
-                )
-                if self.save_samples:
-                    append_jsonl(
-                        sample_output_path,
-                        {
-                            "sample_index": int(sample_index),
-                            "ground_truth_structure": list(gt_tokens),
-                            "generated": asdict(generated_item),
-                            "sequence_loss": float(sequence_loss),
-                            "spectrum_loss": float(spectrum_result["spectrum_loss"]),
-                            "status": str(spectrum_result["status"]),
-                        },
-                    )
-                if distribution_accumulator is not None:
-                    predicted_spectrum = spectrum_result.get("predicted_spectrum")
+            sequence_losses = sequence_losses_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
+            spectrum_losses = np.asarray(
+                [float(item["spectrum_loss"]) for item in spectrum_results],
+                dtype=np.float32,
+            )
+            ok_mask = np.asarray([str(item["status"]) == "ok" for item in spectrum_results], dtype=np.bool_)
+            target_lengths = np.asarray([len(tokens) for tokens in structure_tokens], dtype=np.int64)
+            generated_lengths = np.asarray([len(item.structure_tokens) for item in generated], dtype=np.int64)
+            metric_accumulator.update_batch(
+                sequence_losses=sequence_losses,
+                spectrum_losses=spectrum_losses,
+                ok_mask=ok_mask,
+            )
+
+            if distribution_accumulator is not None:
+                target_spectra_np = np.asarray(spectra.detach().cpu().numpy(), dtype=np.float32)
+                r_rmse = np.full((len(spectrum_results),), self.rt_rmse_max, dtype=np.float32)
+                t_rmse = np.full((len(spectrum_results),), self.rt_rmse_max, dtype=np.float32)
+                valid_pred_indices = []
+                valid_pred_spectra = []
+                for idx, item in enumerate(spectrum_results):
+                    predicted_spectrum = item.get("predicted_spectrum")
                     if predicted_spectrum is None:
-                        r_rmse = self.rt_rmse_max
-                        t_rmse = self.rt_rmse_max
-                    else:
-                        target_spectrum_np = np.asarray(target_spectrum, dtype=np.float32)
-                        r_rmse = spectrum_error(predicted_spectrum, target_spectrum_np, metric="r_rmse")
-                        t_rmse = spectrum_error(predicted_spectrum, target_spectrum_np, metric="t_rmse")
-                    distribution_accumulator.update(
-                        r_rmse=float(r_rmse),
-                        t_rmse=float(t_rmse),
-                        sequence_loss=float(sequence_loss),
-                        generated_length=len(generated_item.structure_tokens),
-                        target_length=len(gt_tokens),
-                    )
-                if self.save_plots and plots_saved < self.plot_max_samples:
-                    predicted_spectrum = spectrum_result.get("predicted_spectrum")
-                    wavelengths_um = spectrum_result.get("wavelengths_um")
-                    if predicted_spectrum is not None and wavelengths_um is not None:
-                        save_spectrum_comparison_plot(
-                            path=plot_output_dir / f"sample_{int(sample_index):08d}.png",
-                            target_spectrum=target_spectrum,
-                            predicted_spectrum=predicted_spectrum,
-                            wavelengths_um=wavelengths_um,
-                            title=f"{split_name} sample={int(sample_index)}",
-                            spectrum_loss=float(spectrum_result["spectrum_loss"]),
-                            status=str(spectrum_result["status"]),
+                        continue
+                    valid_pred_indices.append(idx)
+                    valid_pred_spectra.append(np.asarray(predicted_spectrum, dtype=np.float32))
+
+                if valid_pred_indices:
+                    valid_pred_spectra_np = np.stack(valid_pred_spectra, axis=0)
+                    valid_target_spectra_np = target_spectra_np[np.asarray(valid_pred_indices, dtype=np.int64)]
+                    r_values, t_values = self._batch_rt_rmse(valid_pred_spectra_np, valid_target_spectra_np)
+                    r_rmse[np.asarray(valid_pred_indices, dtype=np.int64)] = r_values
+                    t_rmse[np.asarray(valid_pred_indices, dtype=np.int64)] = t_values
+
+                distribution_accumulator.update_batch(
+                    r_rmse=r_rmse,
+                    t_rmse=t_rmse,
+                    sequence_loss=sequence_losses,
+                    generated_length=generated_lengths,
+                    target_length=target_lengths,
+                )
+
+            if self.save_samples or self.save_plots:
+                for sample_index, gt_tokens, target_spectrum, sequence_loss, generated_item, spectrum_result in zip(
+                    sample_indices,
+                    structure_tokens,
+                    spectra,
+                    sequence_losses.tolist(),
+                    generated,
+                    spectrum_results,
+                ):
+                    if self.save_samples:
+                        append_jsonl(
+                            sample_output_path,
+                            {
+                                "sample_index": int(sample_index),
+                                "ground_truth_structure": list(gt_tokens),
+                                "generated": asdict(generated_item),
+                                "sequence_loss": float(sequence_loss),
+                                "spectrum_loss": float(spectrum_result["spectrum_loss"]),
+                                "status": str(spectrum_result["status"]),
+                            },
                         )
-                        plots_saved += 1
+                    if self.save_plots and plots_saved < self.plot_max_samples:
+                        predicted_spectrum = spectrum_result.get("predicted_spectrum")
+                        wavelengths_um = spectrum_result.get("wavelengths_um")
+                        if predicted_spectrum is not None and wavelengths_um is not None:
+                            save_spectrum_comparison_plot(
+                                path=plot_output_dir / f"sample_{int(sample_index):08d}.png",
+                                target_spectrum=target_spectrum,
+                                predicted_spectrum=predicted_spectrum,
+                                wavelengths_um=wavelengths_um,
+                                title=f"{split_name} sample={int(sample_index)}",
+                                spectrum_loss=float(spectrum_result["spectrum_loss"]),
+                                status=str(spectrum_result["status"]),
+                            )
+                            plots_saved += 1
 
             if hasattr(progress, "set_postfix"):
                 progress.set_postfix(

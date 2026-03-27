@@ -106,6 +106,10 @@ class SpectralSFTTrainer:
         reduced = reduce_tensor(tensor, op="mean")
         return float(reduced.item())
 
+    def _reduce_mean_tensor(self, value: torch.Tensor) -> float:
+        reduced = reduce_tensor(value.detach().to(dtype=torch.float64).reshape(1), op="mean")
+        return float(reduced.item())
+
     def _make_progress(self, iterable, total: int, desc: str):
         """仅在主进程显示按 batch 数量统计的 tqdm 进度条。"""
 
@@ -125,7 +129,7 @@ class SpectralSFTTrainer:
         spectra: Sequence[Sequence[float]],
         sample_indices: Sequence[int],
         sync_gradients: bool,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[torch.Tensor, torch.Tensor, float]:
         """执行一个训练 batch。
 
         这里采用的是“光谱风险最小化”式目标：
@@ -171,7 +175,8 @@ class SpectralSFTTrainer:
                 batch_size=self.batch_size,
             )
             if logprobs.numel() == 0:
-                return 0.0, 0.0, 0.0
+                zero = torch.zeros((), dtype=torch.float32, device=self.model.device)
+                return zero, zero, 0.0
 
             token_mask_float = token_mask.to(dtype=logprobs.dtype)
             lengths = token_mask.sum(dim=-1).clamp_min(1).to(dtype=logprobs.dtype)
@@ -194,8 +199,8 @@ class SpectralSFTTrainer:
             objective.backward()
 
         return (
-            float(objective.detach().cpu().item()),
-            float(spectrum_loss_tensor.mean().detach().cpu().item()),
+            objective.detach(),
+            spectrum_loss_tensor.mean().detach(),
             float(valid_ratio),
         )
 
@@ -230,9 +235,10 @@ class SpectralSFTTrainer:
             self.model.raw_model.train()
             self.optimizer.zero_grad(set_to_none=True)
 
-            epoch_objectives = []
-            epoch_spectrum_losses = []
-            epoch_valid_ratios = []
+            epoch_objective_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
+            epoch_spectrum_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
+            epoch_valid_ratio_sum = 0.0
+            epoch_batch_count = 0
             accum_counter = 0
 
             progress = self._make_progress(
@@ -243,14 +249,15 @@ class SpectralSFTTrainer:
             for batch in progress:
                 global_step += 1
                 accum_counter += 1
-                batch_objective, batch_spectrum_loss, batch_valid_ratio = self._train_batch(
+                batch_objective_tensor, batch_spectrum_loss_tensor, batch_valid_ratio = self._train_batch(
                     spectra=batch["spectra"],
                     sample_indices=batch["sample_indices"].tolist(),
                     sync_gradients=(accum_counter >= self.grad_accum_steps),
                 )
-                epoch_objectives.append(batch_objective)
-                epoch_spectrum_losses.append(batch_spectrum_loss)
-                epoch_valid_ratios.append(batch_valid_ratio)
+                epoch_objective_sum = epoch_objective_sum + batch_objective_tensor
+                epoch_spectrum_sum = epoch_spectrum_sum + batch_spectrum_loss_tensor
+                epoch_valid_ratio_sum += float(batch_valid_ratio)
+                epoch_batch_count += 1
 
                 if accum_counter >= self.grad_accum_steps:
                     torch.nn.utils.clip_grad_norm_(self.model.trainable_parameters(), self.grad_clip_norm)
@@ -259,8 +266,8 @@ class SpectralSFTTrainer:
                     accum_counter = 0
 
                 if global_step == 1 or global_step % self.log_interval == 0:
-                    reduced_objective = self._reduce_mean(batch_objective)
-                    reduced_spectrum = self._reduce_mean(batch_spectrum_loss)
+                    reduced_objective = self._reduce_mean_tensor(batch_objective_tensor)
+                    reduced_spectrum = self._reduce_mean_tensor(batch_spectrum_loss_tensor)
                     reduced_valid = self._reduce_mean(batch_valid_ratio)
                     if hasattr(progress, "set_postfix"):
                         progress.set_postfix(
@@ -283,9 +290,14 @@ class SpectralSFTTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
-            mean_objective = self._reduce_mean(float(np.mean(epoch_objectives)) if epoch_objectives else 0.0)
-            mean_spectrum = self._reduce_mean(float(np.mean(epoch_spectrum_losses)) if epoch_spectrum_losses else 0.0)
-            mean_valid = self._reduce_mean(float(np.mean(epoch_valid_ratios)) if epoch_valid_ratios else 0.0)
+            if epoch_batch_count > 0:
+                mean_objective = self._reduce_mean_tensor(epoch_objective_sum / float(epoch_batch_count))
+                mean_spectrum = self._reduce_mean_tensor(epoch_spectrum_sum / float(epoch_batch_count))
+                mean_valid = self._reduce_mean(epoch_valid_ratio_sum / float(epoch_batch_count))
+            else:
+                mean_objective = 0.0
+                mean_spectrum = 0.0
+                mean_valid = 0.0
             epoch_row = {
                 "epoch": int(epoch),
                 "global_step": int(global_step),

@@ -1,39 +1,32 @@
 # Notes
 
 ## 需求
-在评测阶段增加统计图，总结展示：
-- R-RMSE 与数量的关系
-- T-RMSE 与数量的关系
-- 生成结构长度与原始结构长度的关系
-- 序列误差与数量的关系
-
-要求优先考虑速度，尽量利用多卡并行评测结果做汇总。
+继续优化评测与训练阶段的速度，重点减少 GPU 空转：
+- 减少评测/训练中的强制同步点
+- 将样本级统计改成批量累计
+- 在保证统计图输出的前提下，降低逐样本绘图开销
 
 ## 修改文件
 - evaluators/metrics.py
 - evaluators/spectrum_evaluator.py
-- utils/plotting.py
+- trainers/spectral_sft_trainer.py
 - configs/eval/spectrum_eval.yaml
 - README.md
 - docs/notes.md
 - docs/logs/2026-03.md
 
 ## 修改内容
-- 新增 `DistributionPlotAccumulator`，在每个 rank 本地直接累计直方图/热力图计数，不保存全量样本。
-- 评测结束后使用 all-reduce 汇总各 rank 的计数，只在主进程绘制一次汇总图。
-- 新增评测统计总览图，包含 2x2 子图：
-  - `R-RMSE vs Count`
-  - `T-RMSE vs Count`
-  - `Generated Length vs Target Length`
-  - `Sequence Loss vs Count`
-- 在评测配置中新增：
-  - `evaluation.save_distribution_plots`
-  - `evaluation.distribution_plots.rt_rmse_bins`
-  - `evaluation.distribution_plots.rt_rmse_max`
-  - `evaluation.distribution_plots.sequence_loss_bins`
-  - `evaluation.distribution_plots.sequence_loss_max`
-  - `evaluation.distribution_plots.length_max`
-- README 已同步补充统计图输出路径：
+- 训练阶段去掉了每个 batch 都做 `.cpu().item()` 的同步，改为：
+  - batch 级结果先留在 GPU 上累计
+  - 只在 `log_interval` 和 epoch 结束时做必要同步
+- 评测阶段把样本级统计改成批量累计：
+  - `MetricAccumulator` 新增 `update_batch`
+  - `DistributionPlotAccumulator` 新增 `update_batch`
+- 评测阶段的 `R-RMSE`、`T-RMSE`、序列误差、长度关系图，现在由各 rank 本地累计计数，再 all-reduce 汇总后只画一次。
+- 默认关闭逐样本折线图：
+  - `evaluation.save_plots: false`
+  - 保留汇总统计图 `evaluation.save_distribution_plots: true`
+- 汇总统计图输出路径：
   - `outputs/eval/<experiment>_<timestamp>/plots/summary/<split>_distribution.png`
 
 ## 验证
@@ -49,11 +42,11 @@ print(f'overall: {ok}')"
 结果：通过
 
 ```bash
-D:\anaconda\envs\oneday\python.exe -c "import numpy as np; from pathlib import Path; from utils.plotting import save_eval_distribution_summary; out=Path('outputs/_debug/test_distribution.png'); save_eval_distribution_summary(path=out, split_name='debug', r_rmse_hist=np.arange(1,101), t_rmse_hist=np.arange(101,201), sequence_loss_hist=np.arange(1,101)[::-1], length_heatmap=np.arange(21*21).reshape(21,21), rt_rmse_max=1.0, sequence_loss_max=10.0, length_max=20); print(out.exists(), out)"
+D:\anaconda\envs\oneday\python.exe -c "import numpy as np; from evaluators.metrics import MetricAccumulator, DistributionPlotAccumulator; m=MetricAccumulator(); m.update_batch(np.array([1.0,2.0],dtype=np.float32), np.array([0.1,0.2],dtype=np.float32), np.array([True,False])); print(m.sample_count, m.valid_structure_count, round(m.sequence_loss_sum,3), round(m.spectrum_loss_sum,3)); d=DistributionPlotAccumulator(rt_rmse_bins=10, rt_rmse_max=1.0, sequence_loss_bins=10, sequence_loss_max=5.0, length_max=20); d.update_batch(np.array([0.1,0.9]), np.array([0.2,0.8]), np.array([1.0,4.0]), np.array([5,7]), np.array([6,8])); print(int(d.r_rmse_hist.sum()), int(d.t_rmse_hist.sum()), int(d.sequence_loss_hist.sum()), int(d.length_heatmap.sum()))"
 ```
 
-结果：通过；调试文件已删除
+结果：通过
 
 ## Git
-- branch: `feat/eval-distribution-plots`
-- commit: `git commit -m "feat: add evaluation distribution summary plots"`
+- branch: `perf/reduce-sync-and-vectorize-eval`
+- commit: `git commit -m "perf: reduce sync points and vectorize evaluation stats"`

@@ -11,7 +11,7 @@ experiment:
 # 运行设备：
 # - auto：自动选择 cuda / cpu
 # - cuda:0：显式绑定单卡
-device: auto
+device: cuda:0
 
 paths:
   # 预训练或微调后的 checkpoint
@@ -49,13 +49,13 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 128
+    batch_size: 2048
 
 evaluation:
   # 需要评测的 split
   splits: [train, val]
-  batch_size: 128
-  scoring_batch_size: 128
+  batch_size: 2048
+  scoring_batch_size: 2048
   # 是否保存样本级 JSONL。全量数据很大，默认关闭。
   save_samples: false
   # 是否保存评测统计图总览。该图在各 rank 本地累计计数后统一汇总，开销较小。
@@ -71,7 +71,8 @@ evaluation:
     length_max: 20
   # 是否保存目标光谱与生成光谱的可视化对比图。
   # 图像会输出到 outputs/eval/<exp>/plots/<split>/rankXX/ 下。
-  save_plots: true
+  # 逐样本折线图较慢，默认关闭；若要排查个例再手动打开。
+  save_plots: false
   # 每个 rank 最多保存多少张图，避免全量评测时产出过大。
   plot_max_samples: 32
   # 是否把预测光谱也写入样本记录。若开启，文件体积会明显增大。
@@ -83,7 +84,7 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   material_aliases: {}
-  batch_size: 256
+  batch_size: 2048
   # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
   fixed_max_layers: 20
