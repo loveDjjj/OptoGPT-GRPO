@@ -266,18 +266,21 @@ def evaluate_generated_structures(
 
                 error = spectrum_error(predicted_spectrum, normalized_targets[original_idx], metric=metric)
                 target_r, target_t = split_rt_spectrum(normalized_targets[original_idx])
-                r_error = spectrum_error(reflection, target_r, metric="r_rmse")
-                t_error = spectrum_error(transmission, target_t, metric="t_rmse")
+                # 这里的 reflection / transmission 已经是单段 71 点曲线，
+                # 不能再走要求 `[R..., T...]` 拼接布局的 `spectrum_error(..., metric='r_rmse/t_rmse')`。
+                # 因此直接按单段曲线计算 RMSE，避免把接口语义混用。
+                r_error = float(np.sqrt(np.mean(np.square(reflection - target_r))))
+                t_error = float(np.sqrt(np.mean(np.square(transmission - target_t))))
                 spectrum_losses[original_idx] = float(error)
-                r_rmse[original_idx] = float(r_error)
-                t_rmse[original_idx] = float(t_error)
+                r_rmse[original_idx] = r_error
+                t_rmse[original_idx] = t_error
                 ok_mask[original_idx] = True
                 if results is not None:
                     result = {
                         **base_result,
                         "spectrum_loss": float(error),
-                        "r_rmse": float(r_error),
-                        "t_rmse": float(t_error),
+                        "r_rmse": r_error,
+                        "t_rmse": t_error,
                         "status": "ok",
                     }
                     if return_spectra:
