@@ -11,7 +11,7 @@ PARENT_DIR = THIS_DIR.parent
 if str(PARENT_DIR) not in sys.path:
     sys.path.insert(0, str(PARENT_DIR))
 
-from TMM import (
+from physics import (
     calculate_absorption,
     calculate_optical_properties_batch,
     calculate_optical_properties_batch_torch,
@@ -19,8 +19,8 @@ from TMM import (
 
 
 def list_database_materials():
-    db_dir = THIS_DIR / "database"
-    materials = sorted(p.stem for p in db_dir.glob("*.xlsx"))
+    db_dir = PARENT_DIR / "data" / "materials"
+    materials = sorted(p.stem for p in db_dir.glob("*.csv"))
     if not materials:
         raise RuntimeError(f"未在 {db_dir} 找到任何 .xlsx 材料库文件")
     return materials

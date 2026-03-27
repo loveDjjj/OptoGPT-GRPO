@@ -1,24 +1,20 @@
-"""Batch TMM utilities used by the GRPO reward pipeline.
+"""批量 TMM 计算工具。"""
 
-This module is performance-sensitive: it handles material caching, wavelength
-grid reuse, material-table loading, and the bridge from high-level structure
-configs into the low-level TMM solver.
-"""
-
+import csv
 import os
 import numpy as np
 import torch
 try:
     from .TMM import TMM_solver
 except ImportError:
-    from TMM import TMM_solver
+    from physics.TMM import TMM_solver
 
 # 全局缓存，避免重复读取/插值/生成波长网格
 _material_cache = {}
 _wavelength_cache = {}
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.normpath(os.path.join(_MODULE_DIR, ".."))
-_DEFAULT_DATABASE_PATH = "nk"
+_DEFAULT_DATABASE_PATH = "data/materials"
 
 
 def _resolve_database_path(database_path=None):

@@ -1,8 +1,4 @@
-"""Helpers for converting decoded OptoGPT tokens into TMM-ready structures.
-
-These helpers deliberately stay small and dependency-light because they sit on
-the hot path between policy sampling and physics evaluation.
-"""
+"""结构 token 与 TMM 配置之间的转换工具。"""
 
 from __future__ import annotations
 
@@ -10,15 +6,15 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
-DEFAULT_DATABASE_PATH = "nk"
+DEFAULT_DATABASE_PATH = "data/materials"
 
 
 def split_structure_token(token: str) -> Tuple[str, float]:
-    """Split a token like ``SiO2_120`` into material name and thickness in nm."""
+    """把 `SiO2_120` 这样的 token 拆成材料名和厚度（nm）。"""
 
     parts = token.rsplit("_", 1)
     if len(parts) != 2:
-        raise ValueError(f"Invalid structure token: {token}")
+        raise ValueError(f"非法结构 token: {token}")
 
     material = parts[0]
     thickness_nm = float(parts[1])
@@ -29,11 +25,11 @@ def tokens_to_tmm_config(
     tokens: Sequence[str],
     database_path: str = DEFAULT_DATABASE_PATH,
     material_aliases: Mapping[str, str] | None = None,
-) -> Dict[str, List[float]]:
-    """Convert decoded structure tokens into the config schema expected by TMM."""
+) -> Dict[str, List[float] | str]:
+    """把结构 token 序列转换成 TMM 输入配置。"""
 
     if not tokens:
-        raise ValueError("Empty structure token sequence.")
+        raise ValueError("结构 token 序列为空。")
 
     aliases = dict(material_aliases or {})
     materials: List[str] = []
@@ -52,7 +48,7 @@ def tokens_to_tmm_config(
 
 
 def structure_key(tokens: Sequence[str]) -> str:
-    """Build the canonical structure string used for exact deduplication."""
+    """把结构 token 序列拼成稳定的去重 key。"""
 
     cleaned = [str(token).strip() for token in tokens if str(token).strip()]
     return "|".join(cleaned) if cleaned else "<EMPTY>"
@@ -63,14 +59,14 @@ def pad_tmm_config(
     target_layers: int,
     pad_material: str = "Air",
 ) -> Dict[str, List[float] | str]:
-    """Pad one structure to a target layer count using zero-thickness layers."""
+    """用零厚度 Air 层把结构补到固定层数。"""
 
     materials = list(config["materials"])
     thicknesses = list(config["thicknesses"])
     if len(materials) != len(thicknesses):
-        raise ValueError("materials and thicknesses must have the same length.")
+        raise ValueError("materials 与 thicknesses 的长度必须一致。")
     if len(materials) > target_layers:
-        raise ValueError(f"Structure has {len(materials)} layers, exceeds target_layers={target_layers}.")
+        raise ValueError(f"结构层数 {len(materials)} 超过目标层数 {target_layers}。")
 
     pad_count = target_layers - len(materials)
     if pad_count > 0:
@@ -88,7 +84,7 @@ def pad_tmm_configs_to_max_layers(
     configs: Sequence[Mapping[str, Sequence[float] | str]],
     pad_material: str = "Air",
 ) -> Tuple[List[Dict[str, List[float] | str]], int]:
-    """Pad a batch of structures to the maximum layer count within that batch."""
+    """把一个 batch 中的结构补到当前 batch 的最大层数。"""
 
     if not configs:
         return [], 0
@@ -99,7 +95,7 @@ def pad_tmm_configs_to_max_layers(
 
 
 def bucket_indices_by_layer_count(structure_token_groups: Iterable[Sequence[str]]) -> Dict[int, List[int]]:
-    """Group structure indices by raw decoded layer count."""
+    """按层数给结构分桶。"""
 
     buckets: Dict[int, List[int]] = defaultdict(list)
     for idx, tokens in enumerate(structure_token_groups):

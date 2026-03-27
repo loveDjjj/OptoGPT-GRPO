@@ -1,0 +1,86 @@
+# =========================
+# OptoGPT 光谱评测配置
+# =========================
+
+experiment:
+  # 实验名。输出目录会变成 outputs/eval/<name>_<timestamp>
+  name: spectrum_eval
+  # 全局随机种子
+  seed: 42
+
+# 运行设备：
+# - auto：自动选择 cuda / cpu
+# - cuda:0：显式绑定单卡
+device: auto
+
+paths:
+  # 预训练或微调后的 checkpoint
+  checkpoint: model/optogpt.pt
+  # 评测输出目录
+  output_dir: outputs/eval
+  # 材料库目录。nk 已迁移到 data/materials
+  materials_dir: data/materials
+
+data:
+  # 训练集路径
+  train_spectrum_path: dataset/Spectrum_train.pkl
+  train_structure_path: dataset/Structure_train.pkl
+  # 当前默认把原 test 集当作验证集使用
+  val_spectrum_path: dataset/Spectrum_test.pkl
+  val_structure_path: dataset/Structure_test.pkl
+  # 可选：只评测前若干条样本，便于快速调试；null 表示全量
+  max_train_samples: null
+  max_val_samples: null
+  num_workers: 0
+  pin_memory: true
+  # 若未来希望从训练集内部切验证集，可启用该比例
+  val_ratio: 0.0
+
+sampling:
+  eval:
+    # 评测默认用 greedy，保证前后模型可直接比较
+    decode: greedy
+    top_k: 10
+    top_p: 0.9
+    temperature: 1.0
+    start_symbol: BOS
+    start_mat: null
+    max_len: null
+    batch_size: 64
+
+evaluation:
+  # 需要评测的 split
+  splits: [train, val]
+  batch_size: 32
+  scoring_batch_size: 32
+  # 是否保存样本级 JSONL。全量数据很大，默认关闭。
+  save_samples: false
+  # 是否把预测光谱也写入样本记录。若开启，文件体积会明显增大。
+  save_predicted_spectra: false
+
+tmm:
+  wavelength_range_um: [0.4, 1.1]
+  num_points: 71
+  incident_angle: 0.0
+  polarization: 0
+  material_aliases: {}
+  batch_size: 128
+  pad_to_max_layers: true
+  pad_material: Air
+  debug: false
+  # 这里只是为了保持配置结构统一，实际使用的指标由 losses.spectrum_metric 控制
+  metric: absorption_rmse
+
+losses:
+  # 光谱误差指标
+  spectrum_metric: absorption_rmse
+  invalid_structure_penalty: 1.0
+  nonphysical_spectrum_penalty: 1.0
+  physical_tolerance: 0.01
+
+logging:
+  console_log: true
+
+distributed:
+  # 多卡超时时间，单位分钟
+  timeout_minutes: 30

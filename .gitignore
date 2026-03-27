@@ -1,6 +1,8 @@
 results/
 output/
+optogpt_data/
 model/
+dataset/
 .claude/
 .vscode/
 **/__pycache__/

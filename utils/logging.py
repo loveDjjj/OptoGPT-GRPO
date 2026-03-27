@@ -21,6 +21,13 @@ def append_jsonl(path: str | Path, record: Mapping) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def write_json(path: str | Path, record: Mapping) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(record, handle, ensure_ascii=False, indent=2)
+
+
 def write_summary_csv(path: str | Path, rows: Iterable[Mapping]) -> None:
     rows = list(rows)
     output_path = Path(path)

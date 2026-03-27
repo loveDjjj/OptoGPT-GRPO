@@ -1,0 +1,100 @@
+# =========================
+# OptoGPT 光谱损失微调配置
+# =========================
+
+experiment:
+  # 输出目录会变成 outputs/sft/<name>_<timestamp>
+  name: spectral_sft
+  seed: 42
+
+device: auto
+
+paths:
+  # 基座模型 checkpoint
+  checkpoint: model/optogpt.pt
+  output_dir: outputs/sft
+  materials_dir: data/materials
+
+data:
+  train_spectrum_path: dataset/Spectrum_train.pkl
+  train_structure_path: dataset/Structure_train.pkl
+  # 当前阶段默认把原 test 集作为验证集
+  val_spectrum_path: dataset/Spectrum_test.pkl
+  val_structure_path: dataset/Structure_test.pkl
+  max_train_samples: null
+  max_val_samples: 4096
+  num_workers: 0
+  pin_memory: true
+  val_ratio: 0.0
+
+sampling:
+  train:
+    # 训练时建议保留一定随机性，让模型探索不同结构
+    decode: top-k
+    top_k: 20
+    top_p: 0.9
+    temperature: 1.0
+    start_symbol: BOS
+    start_mat: null
+    max_len: null
+    batch_size: 64
+  eval:
+    # 训练过程中的验证仍然使用 greedy，保证指标稳定可比
+    decode: greedy
+    top_k: 10
+    top_p: 0.9
+    temperature: 1.0
+    start_symbol: BOS
+    start_mat: null
+    max_len: null
+    batch_size: 64
+
+training:
+  epochs: 1
+  batch_size: 8
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  grad_accum_steps: 1
+  log_interval: 20
+  eval_every_epochs: 1
+  # 每条目标光谱生成几个候选结构。当前先默认 1，保证主流程稳定。
+  num_samples_per_target: 1
+  # 是否对 batch 内光谱损失做去中心化。
+  # 开启后：低于 batch 均值的样本会被提升概率，高于均值的样本会被压低概率。
+  center_spectrum_loss: true
+  # 是否按序列长度归一化对数概率，避免长序列天然占更大权重。
+  normalize_logprob_by_length: true
+  save_best: true
+  save_final: true
+
+evaluation:
+  batch_size: 16
+  scoring_batch_size: 16
+  save_samples: false
+  save_predicted_spectra: false
+  splits: [val]
+
+tmm:
+  wavelength_range_um: [0.4, 1.1]
+  num_points: 71
+  incident_angle: 0.0
+  polarization: 0
+  material_aliases: {}
+  batch_size: 128
+  pad_to_max_layers: true
+  pad_material: Air
+  debug: false
+  metric: absorption_rmse
+
+losses:
+  spectrum_metric: absorption_rmse
+  invalid_structure_penalty: 1.0
+  nonphysical_spectrum_penalty: 1.0
+  physical_tolerance: 0.01
+
+logging:
+  console_log: true
+
+distributed:
+  timeout_minutes: 30

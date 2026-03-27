@@ -6,12 +6,13 @@
 
 ## 修改前先读
 - 先读 `README.md`、`docs/notes.md`、当前需求涉及的代码文件和配置文件。
-- 涉及训练入口时，至少补读 `run_grpo.py` 和 `configs/grpo_base.yaml`。
-- 涉及采样、reward、TMM 或 checkpoint 时，补读对应模块再改。
+- 涉及训练入口时，至少补读 `runners/run_spectral_sft.py` 和 `configs/sft/spectral_sft.yaml`。
+- 涉及评测入口时，至少补读 `runners/run_spectrum_eval.py` 和 `configs/eval/spectrum_eval.yaml`。
+- 涉及采样、光谱损失、TMM 或 checkpoint 时，补读对应模块再改。
 
 ## 禁止乱改
 - 没有明确需求时，不改业务逻辑、算法流程、配置参数值、目录结构、输出文件名或 checkpoint 兼容接口。
-- 不要顺手删除 `core/`、`core/trains/`、`TMM/` 等兼容或底层模块。
+- 不要顺手删除 `core/`、`core/trains/`、`physics/` 等兼容或底层模块。
 - 信息不足就写“待确认”，不要补写未经仓库验证的路径、环境名或运行结论。
 
 ## 修改规范

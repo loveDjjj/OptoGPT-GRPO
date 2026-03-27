@@ -1,68 +1,135 @@
-# OptoGPT-GRPO
+# OptoGPT Spectral SFT
 
-## 项目简介
-`OptoGPT-GRPO` 是一个基于 OptoGPT checkpoint 和本地 TMM 求解器的多目标薄膜结构强化学习项目。当前主流程围绕 `gate_dataset` 合成吸收谱目标，生成 `train/eval` 目标集，加载预训练策略并用 GRPO 做数据集级训练，输出评估指标、对比图和 checkpoint。
+## 项目定位
+本项目当前只保留两条主线：
 
-## 项目结构
-- `run_grpo.py`：训练入口。
-- `configs/grpo_base.yaml`：主配置文件。
-- `data/`：合成目标谱生成。
-- `policy/`：OptoGPT checkpoint 封装与采样。
-- `trainers/`：GRPO 训练与评估主循环。
-- `rollouts/`：采样去重与分组。
-- `rewards/`：TMM reward 计算。
-- `TMM/`：传输矩阵求解与材料读取。
-- `nk/`：材料光学常数 CSV 数据。
-- `utils/`：配置、结构转换、日志与绘图工具。
-- `core/`：旧版 OptoGPT checkpoint 兼容层。
+- `光谱测评`
+- `基于光谱损失的 spectral SFT`
 
-## 关键文件说明
-- `run_grpo.py`：读取 YAML、生成目标集、创建运行目录并启动训练。
-- `configs/grpo_base.yaml`：集中定义路径、目标构造、采样、TMM、reward、GRPO、evaluation、plotting、checkpoints 和 logging。
-- `data/spectrum_generator.py`：生成 `gate_dataset` 目标谱，当前支持 `pass` / `stop` 两类任务。
-- `policy/optogpt_policy.py`：加载旧版 OptoGPT checkpoint，负责 batched sampling、logprob 重算和 checkpoint 导出。
-- `trainers/grpo_trainer.py`：执行数据集级 GRPO、周期评估、CSV 指标写出、绘图和 checkpoint 保存。
-- `rewards/tmm_reward.py`：把结构 token 转成 TMM 配置并按当前 reward 指标打分。
-- `TMM/optical_calculator.py`、`TMM/TMM.py`：材料数据加载、折射率插值和 TMM 求解。
-- `utils/structure.py`、`utils/logging.py`：结构解析、padding、JSONL/CSV 和运行目录输出。
-- `core/transformer.py`、`core/train.py`：旧 checkpoint 兼容依赖，当前 GRPO 流程不直接训练这里的逻辑，但加载历史 checkpoint 仍会用到。
+这里的基座模型是 [model/optogpt.pt](/O:/Optics%20Code/OptoGPT-GRPO/model/optogpt.pt)，它本身已经是别人用 `CE/SFT` 预训练好的 OptoGPT。  
+当前仓库不再包含 `GRPO / PPO / Reward` 训练流程。
 
-## 运行方法
-主命令：
+## 当前目录
+- `configs/eval/`
+  光谱测评配置。
+- `configs/sft/`
+  光谱损失微调配置。
+- `runners/`
+  运行入口。
+- `models/optogpt/`
+  基座模型加载、生成、teacher forcing 打分、checkpoint 导出。
+- `datasets/`
+  光谱-结构成对数据集、切分与分布式 sampler。
+- `evaluators/`
+  光谱测评逻辑与指标聚合。
+- `trainers/`
+  基于光谱损失的训练器。
+- `losses/`
+  序列损失与光谱损失。
+- `physics/`
+  原 `TMM/` 模块整体迁移后的物理计算代码。
+- `data/materials/`
+  原 `nk/` 材料库。
+- `dataset/`
+  当前使用的 `Spectrum_*.pkl` 与 `Structure_*.pkl`。
+- `core/`
+  旧 checkpoint 兼容层，保留但不扩展新逻辑。
+
+## 数据说明
+当前默认使用：
+
+- 训练集：
+  [dataset/Spectrum_train.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_train.pkl)
+  [dataset/Structure_train.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_train.pkl)
+- 验证集：
+  [dataset/Spectrum_test.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_test.pkl)
+  [dataset/Structure_test.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_test.pkl)
+
+如果后续需要严格划分 `train/val/test`，可以：
+
+- 直接新增独立 `val` 文件
+- 或在配置里启用 `data.val_ratio`
+
+## 两个入口
+### 1. 光谱测评
+功能：
+
+- 输入目标光谱
+- 生成结构
+- 计算真实结构的序列损失
+- 计算生成结构对应的光谱损失
+- 输出样本级结果与汇总统计
+
+命令：
 
 ```bash
-python run_grpo.py --config configs/grpo_base.yaml
+python runners/run_spectrum_eval.py --config configs/eval/spectrum_eval.yaml
 ```
 
-运行前请先确认：
-- `configs/grpo_base.yaml` 中 `paths.optogpt_checkpoint` 指向可用 checkpoint。当前默认值是 `model/optogpt.pt`，但仓库内未见 `model/` 目录，需自行补齐或改配置。
-- 仓库内未见单独的依赖清单；按当前导入，至少需要 `torch`、`numpy`、`PyYAML`、`pandas`、`scipy`，保存图像时还需要 `matplotlib`。
-- `TMM/demo.py` 是独立演示脚本，但脚本默认读取 `TMM/database`，当前仓库未见该目录，辅助运行方式待确认。
+多卡：
 
-## 配置说明
-- 主配置文件是 `configs/grpo_base.yaml`。
-- `experiment` 控制实验名和随机种子。
-- `paths` 控制 checkpoint、输出目录和材料库目录；当前材料库目录为 `nk/`。
-- `target` 定义 `gate_dataset` 的波长范围、采样数量、门宽范围、平滑边缘和 `pass/stop` 家族。
-- `sampling`、`tmm`、`reward`、`grpo` 分别控制候选采样、物理求解、奖励计算和策略更新。
-- `evaluation`、`plotting`、`checkpoints`、`logging` 控制周期评估、图片输出、权重保存和日志文件名。
-- `target.num_points` 与 `tmm.num_points` 需要保持一致；当前代码和配置都按这一约束组织。
+```bash
+torchrun --nproc_per_node=4 runners/run_spectrum_eval.py --config configs/eval/spectrum_eval.yaml
+```
 
-## 输出说明
-- 每次运行会创建 `outputs/<experiment.name>_<timestamp>/`。
-- 关键输出包括 `config.snapshot.yaml`、`train_targets.jsonl`、`eval_targets.jsonl`、`summary.csv`。
-- `metrics/` 下会写入 `before_eval.csv`、`after_eval.csv`、`train_metrics.csv`、`eval_metrics.csv`；若启用训练集对比，还会写 `before_train_compare.csv` 和 `after_train_compare.csv`。
-- `plots/` 下会写 `eval_mean_error.png` 以及 before/after 对比图。
-- `checkpoints/` 下会写 `best_eval.pt` 和 `final.pt`。
-- `rollouts.jsonl` 只在 `logging.save_rollouts: true` 时生成。
+### 2. 光谱损失微调
+功能：
 
-## 阅读顺序
-1. `README.md`
-2. `configs/grpo_base.yaml`
-3. `run_grpo.py`
-4. `data/spectrum_generator.py`
-5. `policy/optogpt_policy.py`
-6. `trainers/grpo_trainer.py`
-7. `rewards/tmm_reward.py`
-8. `TMM/optical_calculator.py`
-9. `TMM/TMM.py`
+- 读取训练集光谱
+- 用当前模型生成结构
+- 用 TMM 计算生成结构的光谱损失
+- 用去中心化后的光谱损失加权生成序列的对数概率，更新模型
+
+命令：
+
+```bash
+python runners/run_spectral_sft.py --config configs/sft/spectral_sft.yaml
+```
+
+多卡：
+
+```bash
+torchrun --nproc_per_node=4 runners/run_spectral_sft.py --config configs/sft/spectral_sft.yaml
+```
+
+## 多卡建议
+当前模型规模不大，最合适的并行方式是 `DDP 数据并行`，不是模型并行。
+
+- 开发调试：`1-2 卡`
+- 正式训练：`4 卡`最合适
+- 大规模评测：`4-8 卡`都可以
+
+如果没有 NVLink，也仍然可以跑；只是对当前任务来说，`4 卡`通常比 `8 卡`更均衡。
+
+## 输出目录
+光谱测评输出：
+
+- `outputs/eval/<experiment>_<timestamp>/config.snapshot.yaml`
+- `outputs/eval/<experiment>_<timestamp>/metrics/*.csv`
+- `outputs/eval/<experiment>_<timestamp>/samples/*.jsonl`
+
+光谱损失微调输出：
+
+- `outputs/sft/<experiment>_<timestamp>/config.snapshot.yaml`
+- `outputs/sft/<experiment>_<timestamp>/metrics/*.csv`
+- `outputs/sft/<experiment>_<timestamp>/checkpoints/best.pt`
+- `outputs/sft/<experiment>_<timestamp>/checkpoints/final.pt`
+
+## 依赖
+运行前请确认以下依赖可用：
+
+- `python`
+- `torch`
+- `PyYAML`
+- `numpy`
+- `scipy`
+
+可选：
+
+- `matplotlib`
+  仅在后续需要画图时使用。
+
+## 说明
+- 当前 `physics/` 直接复用原 TMM 模块，不另起一套实现。
+- 当前训练目标不是传统 teacher forcing CE，而是基于生成结构光谱误差的微调。
+- `core/` 保留的唯一目的，是兼容旧 OptoGPT checkpoint 的加载。
