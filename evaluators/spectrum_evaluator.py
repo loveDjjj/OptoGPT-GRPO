@@ -13,6 +13,7 @@ from losses import evaluate_generated_structures, masked_mean_negative_logprob
 from models.optogpt import build_decode_config, generate_structures_for_targets, sequence_logprobs_multi_target_batch_tensor
 from utils.dist import DistributedContext, barrier
 from utils.logging import append_jsonl, write_summary_csv
+from utils.plotting import save_spectrum_comparison_plot
 from .metrics import MetricAccumulator, reduce_metric_accumulator
 
 
@@ -43,6 +44,8 @@ class SpectrumEvaluator:
         self.pin_memory = bool(data_cfg.get("pin_memory", False))
         self.prefetch_factor = int(data_cfg.get("prefetch_factor", 2))
         self.save_samples = bool(evaluation_cfg.get("save_samples", False))
+        self.save_plots = bool(evaluation_cfg.get("save_plots", False))
+        self.plot_max_samples = max(0, int(evaluation_cfg.get("plot_max_samples", 0)))
         self.decode_config = build_decode_config(sampling_cfg, default_max_len=self.model.max_len)
         self.metric = str(tmm_cfg.get("metric", config["losses"]["spectrum_metric"]))
         self.materials_dir = str(config["paths"]["materials_dir"])
@@ -59,7 +62,8 @@ class SpectrumEvaluator:
             "physical_tolerance": float(config["losses"].get("physical_tolerance", 0.01)),
             "database_path": self.materials_dir,
             "material_aliases": tmm_cfg.get("material_aliases", {}),
-            "return_spectra": bool(evaluation_cfg.get("save_predicted_spectra", False)),
+            # 若要画图，就必须保留生成结构对应的光谱曲线。
+            "return_spectra": bool(evaluation_cfg.get("save_predicted_spectra", False) or self.save_plots),
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
             "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
@@ -69,8 +73,10 @@ class SpectrumEvaluator:
 
         self.samples_dir = self.run_dir / "samples"
         self.metrics_dir = self.run_dir / "metrics"
+        self.plots_dir = self.run_dir / "plots"
         self.samples_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.plots_dir.mkdir(parents=True, exist_ok=True)
 
     def _log(self, message: str) -> None:
         if self.console_log and self.dist_ctx.is_main:
@@ -81,6 +87,9 @@ class SpectrumEvaluator:
 
     def _summary_output_path(self, split_name: str) -> Path:
         return self.metrics_dir / f"{split_name}_summary.csv"
+
+    def _plot_output_dir(self, split_name: str) -> Path:
+        return self.plots_dir / split_name / f"rank{self.dist_ctx.rank:02d}"
 
     def evaluate(self, dataset, split_name: str) -> dict | None:
         """执行一次完整评测。"""
@@ -108,8 +117,12 @@ class SpectrumEvaluator:
         self.model.raw_model.eval()
         metric_accumulator = MetricAccumulator()
         sample_output_path = self._sample_output_path(split_name)
+        plot_output_dir = self._plot_output_dir(split_name)
+        plots_saved = 0
         if sample_output_path.exists():
             sample_output_path.unlink()
+        if self.save_plots:
+            plot_output_dir.mkdir(parents=True, exist_ok=True)
 
         for batch in dataloader:
             spectra = batch["spectra"]
@@ -146,9 +159,10 @@ class SpectrumEvaluator:
                 **self.tmm_kwargs,
             )
 
-            for sample_index, gt_tokens, sequence_loss, generated_item, spectrum_result in zip(
+            for sample_index, gt_tokens, target_spectrum, sequence_loss, generated_item, spectrum_result in zip(
                 sample_indices,
                 structure_tokens,
+                spectra,
                 sequence_losses,
                 generated,
                 spectrum_results,
@@ -170,6 +184,20 @@ class SpectrumEvaluator:
                             "status": str(spectrum_result["status"]),
                         },
                     )
+                if self.save_plots and plots_saved < self.plot_max_samples:
+                    predicted_spectrum = spectrum_result.get("predicted_spectrum")
+                    wavelengths_um = spectrum_result.get("wavelengths_um")
+                    if predicted_spectrum is not None and wavelengths_um is not None:
+                        save_spectrum_comparison_plot(
+                            path=plot_output_dir / f"sample_{int(sample_index):08d}.png",
+                            target_spectrum=target_spectrum,
+                            predicted_spectrum=predicted_spectrum,
+                            wavelengths_um=wavelengths_um,
+                            title=f"{split_name} sample={int(sample_index)}",
+                            spectrum_loss=float(spectrum_result["spectrum_loss"]),
+                            status=str(spectrum_result["status"]),
+                        )
+                        plots_saved += 1
 
         merged_metrics = reduce_metric_accumulator(metric_accumulator, device=self.model.device)
         barrier()

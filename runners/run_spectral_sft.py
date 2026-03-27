@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import torch.distributed as dist
+
+# 允许直接通过 `python runners/run_spectral_sft.py ...` 运行。
+# Python 直接执行脚本时，默认只把 `runners/` 放进 sys.path，
+# 这里显式补上仓库根目录，避免找不到 `datasets/`、`models/` 等本地包。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from datasets import build_split_datasets
 from models.optogpt import OptoGPTModel, resolve_device

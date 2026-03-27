@@ -58,6 +58,11 @@ evaluation:
   scoring_batch_size: 32
   # 是否保存样本级 JSONL。全量数据很大，默认关闭。
   save_samples: false
+  # 是否保存目标光谱与生成光谱的可视化对比图。
+  # 图像会输出到 outputs/eval/<exp>/plots/<split>/rankXX/ 下。
+  save_plots: true
+  # 每个 rank 最多保存多少张图，避免全量评测时产出过大。
+  plot_max_samples: 32
   # 是否把预测光谱也写入样本记录。若开启，文件体积会明显增大。
   save_predicted_spectra: false
 
