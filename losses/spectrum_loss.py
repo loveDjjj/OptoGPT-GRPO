@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Mapping, Sequence
+from typing import Any, List, Mapping, Sequence
 
 import numpy as np
 
@@ -27,6 +27,22 @@ def _normalize_targets(target_spectra: Sequence[Sequence[float]] | Sequence[floa
     raise ValueError("target_spectra 的形状必须是 (142,) 或 (batch, 142)。")
 
 
+def _format_return_payload(
+    results: List[dict] | None,
+    aux_arrays: dict[str, np.ndarray],
+    *,
+    return_item_results: bool,
+    return_aux_arrays: bool,
+):
+    """统一整理返回值，兼容训练与评测两条调用链。"""
+
+    if return_item_results and return_aux_arrays:
+        return results, aux_arrays
+    if return_item_results:
+        return results
+    return aux_arrays
+
+
 def evaluate_generated_structures(
     structure_token_groups: Sequence[Sequence[str]],
     target_spectra: Sequence[Sequence[float]] | Sequence[float],
@@ -47,17 +63,31 @@ def evaluate_generated_structures(
     pad_material: str = "Air",
     batch_size: int | None = None,
     tmm_debug: bool = False,
-) -> List[dict]:
+    return_aux_arrays: bool = False,
+    return_item_results: bool = True,
+) -> List[dict] | dict[str, np.ndarray] | tuple[List[dict], dict[str, np.ndarray]]:
     """评估生成结构对应的光谱损失。
 
-    输出字段中显式使用 `spectrum_loss`，避免继续沿用 RL 阶段的 `reward` 概念。
+    默认仍返回逐样本结果列表，兼容现有可视化与样本落盘逻辑。
+    当训练或快速评测只关心批量统计时，可以关闭 `return_item_results`，
+    直接拿批量数组，避免额外构造大量 Python dict。
     """
 
-    results: List[dict] = [None] * len(structure_token_groups)
-    normalized_targets = _normalize_targets(target_spectra, len(structure_token_groups))
+    sample_count = len(structure_token_groups)
+    results: List[dict] | None = [None] * sample_count if return_item_results else None
+    normalized_targets = _normalize_targets(target_spectra, sample_count)
     nonphysical_penalty = float(
         invalid_structure_penalty if nonphysical_spectrum_penalty is None else nonphysical_spectrum_penalty
     )
+
+    spectrum_losses = np.full((sample_count,), float(invalid_structure_penalty), dtype=np.float32)
+    ok_mask = np.zeros((sample_count,), dtype=np.bool_)
+    predicted_spectra = None
+    has_predicted_spectrum = None
+    spectrum_dim = int(normalized_targets[0].shape[0]) if sample_count > 0 else int(num_points) * 2
+    if return_aux_arrays and return_spectra and sample_count > 0:
+        predicted_spectra = np.full((sample_count, spectrum_dim), np.nan, dtype=np.float32)
+        has_predicted_spectrum = np.zeros((sample_count,), dtype=np.bool_)
 
     valid_items = []
     for idx, tokens in enumerate(structure_token_groups):
@@ -68,12 +98,13 @@ def evaluate_generated_structures(
                 material_aliases=material_aliases,
             )
         except Exception as exc:
-            results[idx] = {
-                "index": idx,
-                "structure_tokens": list(tokens),
-                "spectrum_loss": float(invalid_structure_penalty),
-                "status": f"invalid_structure: {exc}",
-            }
+            if results is not None:
+                results[idx] = {
+                    "index": idx,
+                    "structure_tokens": list(tokens),
+                    "spectrum_loss": float(invalid_structure_penalty),
+                    "status": f"invalid_structure: {exc}",
+                }
             continue
 
         valid_items.append(
@@ -86,7 +117,19 @@ def evaluate_generated_structures(
         )
 
     if not valid_items:
-        return results
+        aux_arrays = {
+            "spectrum_losses": spectrum_losses,
+            "ok_mask": ok_mask,
+        }
+        if predicted_spectra is not None and has_predicted_spectrum is not None:
+            aux_arrays["predicted_spectra"] = predicted_spectra
+            aux_arrays["has_predicted_spectrum"] = has_predicted_spectrum
+        return _format_return_payload(
+            results,
+            aux_arrays,
+            return_item_results=return_item_results,
+            return_aux_arrays=return_aux_arrays,
+        )
 
     grouped_eval_items: List[List[dict]] = []
     if fixed_max_layers is not None:
@@ -94,14 +137,15 @@ def evaluate_generated_structures(
         padded_inputs = []
         for item in valid_items:
             if item["layer_count"] > fixed_max_layers:
-                results[item["index"]] = {
-                    "index": item["index"],
-                    "structure_tokens": item["structure_tokens"],
-                    "layer_count": item["layer_count"],
-                    "padded_layer_count": fixed_max_layers,
-                    "spectrum_loss": float(invalid_structure_penalty),
-                    "status": f"too_many_layers>{fixed_max_layers}",
-                }
+                if results is not None:
+                    results[item["index"]] = {
+                        "index": item["index"],
+                        "structure_tokens": item["structure_tokens"],
+                        "layer_count": item["layer_count"],
+                        "padded_layer_count": fixed_max_layers,
+                        "spectrum_loss": float(invalid_structure_penalty),
+                        "status": f"too_many_layers>{fixed_max_layers}",
+                    }
                 continue
             padded_inputs.append(item)
 
@@ -164,20 +208,23 @@ def evaluate_generated_structures(
 
             if wavelengths is None:
                 for item in batch_items:
-                    results[item["index"]] = {
-                        "index": item["index"],
-                        "structure_tokens": item["structure_tokens"],
-                        "layer_count": item["layer_count"],
-                        "padded_layer_count": int(item.get("padded_layer_count", item["layer_count"])),
-                        "spectrum_loss": float(invalid_structure_penalty),
-                        "status": "tmm_failed",
-                    }
+                    if results is not None:
+                        results[item["index"]] = {
+                            "index": item["index"],
+                            "structure_tokens": item["structure_tokens"],
+                            "layer_count": item["layer_count"],
+                            "padded_layer_count": int(item.get("padded_layer_count", item["layer_count"])),
+                            "spectrum_loss": float(invalid_structure_penalty),
+                            "status": "tmm_failed",
+                        }
                 continue
 
+            wavelengths_array = np.asarray(wavelengths, dtype=np.float32)
             for local_idx, item in enumerate(batch_items):
                 original_idx = item["index"]
                 reflection = np.asarray(reflections[local_idx], dtype=np.float32)
                 transmission = np.asarray(transmissions[local_idx], dtype=np.float32)
+                predicted_spectrum = flatten_rt(reflection, transmission)
                 base_result = {
                     "index": original_idx,
                     "structure_tokens": item["structure_tokens"],
@@ -185,32 +232,52 @@ def evaluate_generated_structures(
                     "padded_layer_count": int(item.get("padded_layer_count", item["layer_count"])),
                 }
 
+                if predicted_spectra is not None and has_predicted_spectrum is not None:
+                    predicted_spectra[original_idx] = predicted_spectrum
+                    has_predicted_spectrum[original_idx] = True
+
                 if not is_physical_spectrum(reflection, transmission, tolerance=physical_tolerance):
-                    result = {
-                        **base_result,
-                        "spectrum_loss": float(nonphysical_penalty),
-                        "status": "nonphysical_spectrum",
-                    }
-                    if return_spectra:
-                        result["wavelengths_um"] = np.asarray(wavelengths, dtype=np.float32)
-                        result["reflection"] = reflection
-                        result["transmission"] = transmission
-                        result["predicted_spectrum"] = flatten_rt(reflection, transmission)
-                    results[original_idx] = result
+                    spectrum_losses[original_idx] = float(nonphysical_penalty)
+                    if results is not None:
+                        result = {
+                            **base_result,
+                            "spectrum_loss": float(nonphysical_penalty),
+                            "status": "nonphysical_spectrum",
+                        }
+                        if return_spectra:
+                            result["wavelengths_um"] = wavelengths_array
+                            result["reflection"] = reflection
+                            result["transmission"] = transmission
+                            result["predicted_spectrum"] = predicted_spectrum
+                        results[original_idx] = result
                     continue
 
-                predicted_spectrum = flatten_rt(reflection, transmission)
                 error = spectrum_error(predicted_spectrum, normalized_targets[original_idx], metric=metric)
-                result = {
-                    **base_result,
-                    "spectrum_loss": float(error),
-                    "status": "ok",
-                }
-                if return_spectra:
-                    result["wavelengths_um"] = np.asarray(wavelengths, dtype=np.float32)
-                    result["reflection"] = reflection
-                    result["transmission"] = transmission
-                    result["predicted_spectrum"] = predicted_spectrum
-                results[original_idx] = result
+                spectrum_losses[original_idx] = float(error)
+                ok_mask[original_idx] = True
+                if results is not None:
+                    result = {
+                        **base_result,
+                        "spectrum_loss": float(error),
+                        "status": "ok",
+                    }
+                    if return_spectra:
+                        result["wavelengths_um"] = wavelengths_array
+                        result["reflection"] = reflection
+                        result["transmission"] = transmission
+                        result["predicted_spectrum"] = predicted_spectrum
+                    results[original_idx] = result
 
-    return results
+    aux_arrays = {
+        "spectrum_losses": spectrum_losses,
+        "ok_mask": ok_mask,
+    }
+    if predicted_spectra is not None and has_predicted_spectrum is not None:
+        aux_arrays["predicted_spectra"] = predicted_spectra
+        aux_arrays["has_predicted_spectrum"] = has_predicted_spectrum
+    return _format_return_payload(
+        results,
+        aux_arrays,
+        return_item_results=return_item_results,
+        return_aux_arrays=return_aux_arrays,
+    )

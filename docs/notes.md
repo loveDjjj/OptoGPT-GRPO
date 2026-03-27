@@ -1,52 +1,65 @@
 # Notes
 
 ## 需求
-继续优化评测与训练阶段的速度，重点减少 GPU 空转：
-- 减少评测/训练中的强制同步点
-- 将样本级统计改成批量累计
-- 在保证统计图输出的前提下，降低逐样本绘图开销
+继续优化 SFT 主链的吞吐，重点降低训练中验证阶段和光谱损失计算带来的 GPU 空转。
 
 ## 修改文件
-- evaluators/metrics.py
+- configs/sft/spectral_sft.yaml
 - evaluators/spectrum_evaluator.py
+- losses/spectrum_loss.py
 - trainers/spectral_sft_trainer.py
-- configs/eval/spectrum_eval.yaml
-- README.md
 - docs/notes.md
 - docs/logs/2026-03.md
 
 ## 修改内容
-- 训练阶段去掉了每个 batch 都做 `.cpu().item()` 的同步，改为：
-  - batch 级结果先留在 GPU 上累计
-  - 只在 `log_interval` 和 epoch 结束时做必要同步
-- 评测阶段把样本级统计改成批量累计：
-  - `MetricAccumulator` 新增 `update_batch`
-  - `DistributionPlotAccumulator` 新增 `update_batch`
-- 评测阶段的 `R-RMSE`、`T-RMSE`、序列误差、长度关系图，现在由各 rank 本地累计计数，再 all-reduce 汇总后只画一次。
-- 默认关闭逐样本折线图：
-  - `evaluation.save_plots: false`
-  - 保留汇总统计图 `evaluation.save_distribution_plots: true`
-- 汇总统计图输出路径：
-  - `outputs/eval/<experiment>_<timestamp>/plots/summary/<split>_distribution.png`
+- SFT 训练中的验证默认关闭 `save_plots` 和 `save_distribution_plots`，避免每个 epoch 额外生成图像和统计图。
+- 将 SFT 验证的 `evaluation.batch_size` 与 `scoring_batch_size` 默认提升到 `128`，利用无梯度验证阶段的显存余量。
+- `evaluate_generated_structures(...)` 新增批量数组快路：
+  - 支持只返回 `spectrum_losses` 和 `ok_mask`
+  - 需要时再额外返回逐样本结果
+  - 训练阶段不再为每个样本构造 Python dict
+- `SpectrumEvaluator` 增加真值结构 token id 缓存，减少训练过程中重复验证时的 CPU 编码开销。
+- `SpectrumEvaluator.evaluate(...)` 使用 `torch.inference_mode()`，并在不保存样本/图片时直接消费批量数组结果，减少 Python 遍历。
+- `SpectralSFTTrainer._train_batch(...)` 直接消费光谱损失批量数组，避免训练阶段的二次 list/dict 提取。
 
 ## 验证
 ```bash
-D:\anaconda\envs\oneday\python.exe -c "import compileall; paths=['runners','models','datasets','evaluators','losses','physics','trainers','utils','scripts','core']; ok=True
-for path in paths:
-    result=compileall.compile_dir(path, quiet=1)
-    print(f'{path}: {result}')
-    ok = ok and result
-print(f'overall: {ok}')"
+D:\anaconda\envs\oneday\python.exe -m compileall trainers evaluators losses runners models datasets utils
 ```
 
 结果：通过
 
 ```bash
-D:\anaconda\envs\oneday\python.exe -c "import numpy as np; from evaluators.metrics import MetricAccumulator, DistributionPlotAccumulator; m=MetricAccumulator(); m.update_batch(np.array([1.0,2.0],dtype=np.float32), np.array([0.1,0.2],dtype=np.float32), np.array([True,False])); print(m.sample_count, m.valid_structure_count, round(m.sequence_loss_sum,3), round(m.spectrum_loss_sum,3)); d=DistributionPlotAccumulator(rt_rmse_bins=10, rt_rmse_max=1.0, sequence_loss_bins=10, sequence_loss_max=5.0, length_max=20); d.update_batch(np.array([0.1,0.9]), np.array([0.2,0.8]), np.array([1.0,4.0]), np.array([5,7]), np.array([6,8])); print(int(d.r_rmse_hist.sum()), int(d.t_rmse_hist.sum()), int(d.sequence_loss_hist.sum()), int(d.length_heatmap.sum()))"
+@'
+import numpy as np
+from losses import evaluate_generated_structures
+
+out = evaluate_generated_structures(
+    structure_token_groups=[['BAD_TOKEN']],
+    target_spectra=np.zeros((1, 142), dtype=np.float32),
+    database_path='data/materials',
+    return_item_results=False,
+    return_aux_arrays=True,
+    return_spectra=False,
+)
+print(sorted(out.keys()))
+print(out['spectrum_losses'].dtype, out['spectrum_losses'].shape, float(out['spectrum_losses'][0]))
+print(out['ok_mask'].dtype, out['ok_mask'].shape, bool(out['ok_mask'][0]))
+
+results, aux = evaluate_generated_structures(
+    structure_token_groups=[['BAD_TOKEN']],
+    target_spectra=np.zeros((1, 142), dtype=np.float32),
+    database_path='data/materials',
+    return_item_results=True,
+    return_aux_arrays=True,
+    return_spectra=False,
+)
+print(type(results).__name__, type(aux).__name__, results[0]['status'])
+'@ | D:\anaconda\envs\oneday\python.exe -
 ```
 
 结果：通过
 
 ## Git
-- branch: `perf/reduce-sync-and-vectorize-eval`
-- commit: `git commit -m "perf: reduce sync points and vectorize evaluation stats"`
+- branch: `perf/sft-throughput-fastpath`
+- commit: `git commit -m "perf: reduce spectral sft validation overhead"`

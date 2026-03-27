@@ -76,10 +76,16 @@ training:
   save_final: true
 
 evaluation:
-  batch_size: 64
-  scoring_batch_size: 64
+  # 验证默认不开绘图和样本落盘，因而可以把无梯度评测 batch 适度调大；
+  # 若显存不足，再把这两项回调到 64。
+  batch_size: 128
+  scoring_batch_size: 128
   save_samples: false
+  # SFT 训练过程中的验证优先看数值指标，不默认保存逐样本图。
+  save_plots: false
   save_predicted_spectra: false
+  # 训练中的验证不默认生成统计图，完整绘图留给独立评测入口。
+  save_distribution_plots: false
   splits: [val]
 
 tmm:

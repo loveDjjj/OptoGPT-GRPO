@@ -154,9 +154,13 @@ class SpectralSFTTrainer:
             expanded_spectra = []
             for _ in range(self.train_num_samples_per_target):
                 expanded_spectra.extend(list(spectra))
-        spectrum_results = evaluate_generated_structures(
+        # 训练阶段只需要光谱损失和有效样本掩码，不需要逐样本 dict。
+        # 这里直接走批量数组快路，减少 Python 对象构造和二次遍历。
+        spectrum_aux = evaluate_generated_structures(
             structure_token_groups=[item.structure_tokens for item in generated],
             target_spectra=expanded_spectra,
+            return_item_results=False,
+            return_aux_arrays=True,
             **self.tmm_kwargs,
         )
         token_id_groups = [item.token_ids for item in generated]
@@ -184,17 +188,21 @@ class SpectralSFTTrainer:
             if self.normalize_logprob_by_length:
                 sequence_logprob = sequence_logprob / lengths
 
-            spectrum_loss_tensor = torch.tensor(
-                [float(item["spectrum_loss"]) for item in spectrum_results],
+            spectrum_loss_tensor = torch.as_tensor(
+                spectrum_aux["spectrum_losses"],
                 dtype=logprobs.dtype,
                 device=self.model.device,
             )
-            valid_ratio = float(np.mean([1.0 if item["status"] == "ok" else 0.0 for item in spectrum_results]))
+            valid_ratio = float(np.mean(spectrum_aux["ok_mask"].astype(np.float32)))
 
             weight_tensor = spectrum_loss_tensor
             if self.center_spectrum_loss and spectrum_loss_tensor.numel() > 1:
                 weight_tensor = spectrum_loss_tensor - spectrum_loss_tensor.mean()
 
+            # 注意：这里优化的是 E[loss * logprob]。
+            # 开启中心化后，低于 batch 均值的样本会得到负权重，从而被提升概率；
+            # 高于 batch 均值的样本得到正权重，会被压低概率。
+            # 这条语义依赖 center_spectrum_loss=True，因此保持显式注释。
             objective = torch.mean(weight_tensor.detach() * sequence_logprob)
             objective.backward()
 

@@ -11,7 +11,7 @@ experiment:
 # 运行设备：
 # - auto：自动选择 cuda / cpu
 # - cuda:0：显式绑定单卡
-device: cuda:0
+device: auto
 
 paths:
   # 预训练或微调后的 checkpoint
@@ -33,7 +33,7 @@ data:
   max_val_samples: null
   # `num_workers > 0` 就是多进程加载。
   # 这里默认调到 8，优先改善单卡评测时的数据等待；多卡时若 CPU 压力过大，可按每卡 4 往回调。
-  num_workers: 8
+  num_workers: 64
   pin_memory: true
   prefetch_factor: 4
   # 若未来希望从训练集内部切验证集，可启用该比例
@@ -49,13 +49,13 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 2048
+    batch_size: 4096
 
 evaluation:
   # 需要评测的 split
   splits: [train, val]
-  batch_size: 2048
-  scoring_batch_size: 2048
+  batch_size: 4096
+  scoring_batch_size: 4096
   # 是否保存样本级 JSONL。全量数据很大，默认关闭。
   save_samples: false
   # 是否保存评测统计图总览。该图在各 rank 本地累计计数后统一汇总，开销较小。
@@ -63,7 +63,7 @@ evaluation:
   distribution_plots:
     # R-RMSE / T-RMSE 直方图 bin 数与最大横轴范围。
     rt_rmse_bins: 100
-    rt_rmse_max: 1.0
+    rt_rmse_max: 0.5
     # 序列误差直方图 bin 数与最大横轴范围；超出部分会并入最后一个 bin。
     sequence_loss_bins: 100
     sequence_loss_max: 10.0
@@ -84,7 +84,7 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   material_aliases: {}
-  batch_size: 2048
+  batch_size: 4096
   # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
   fixed_max_layers: 20
