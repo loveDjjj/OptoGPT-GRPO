@@ -29,7 +29,7 @@ def evaluate_generated_structures(
     num_points: int = 71,
     incident_angle: float = 0.0,
     polarization: int = 0,
-    metric: str = "absorption_rmse",
+    metric: str = "rt_rmse",
     invalid_structure_penalty: float = 1.0,
     nonphysical_spectrum_penalty: float | None = None,
     physical_tolerance: float = 0.01,

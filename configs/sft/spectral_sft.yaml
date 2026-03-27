@@ -92,10 +92,12 @@ tmm:
   bucket_by_layer_count: true
   pad_material: Air
   debug: false
-  metric: absorption_rmse
+  # 当前默认直接比较拼接后的 R/T 光谱，不再使用吸收率误差。
+  metric: rt_rmse
 
 losses:
-  spectrum_metric: absorption_rmse
+  # `rt_rmse` 表示直接比较 `[R..., T...]` 两段光谱的 RMSE。
+  spectrum_metric: rt_rmse
   invalid_structure_penalty: 1.0
   nonphysical_spectrum_penalty: 1.0
   physical_tolerance: 0.01

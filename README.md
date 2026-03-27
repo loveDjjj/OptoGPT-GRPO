@@ -135,4 +135,5 @@ torchrun --nproc_per_node=4 runners/run_spectral_sft.py --config configs/sft/spe
 ## 说明
 - 当前 `physics/` 直接复用原 TMM 模块，不另起一套实现。
 - 当前训练目标不是传统 teacher forcing CE，而是基于生成结构光谱误差的微调。
+- 当前默认的光谱误差是 `R/T` 直接误差，即比较拼接后的 `[R..., T...]` 光谱，不再默认使用吸收率误差。
 - `core/` 保留的唯一目的，是兼容旧 OptoGPT checkpoint 的加载。

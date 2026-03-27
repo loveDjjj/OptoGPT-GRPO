@@ -34,23 +34,34 @@ def absorption_curve(reflection: Sequence[float], transmission: Sequence[float])
 def spectrum_error(
     predicted_spectrum: Sequence[float],
     target_spectrum: Sequence[float],
-    metric: str = "absorption_rmse",
+    metric: str = "rt_rmse",
 ) -> float:
     """计算预测光谱与目标光谱之间的误差。"""
 
     predicted = np.asarray(predicted_spectrum, dtype=np.float32)
     target = np.asarray(target_spectrum, dtype=np.float32)
 
+    # 当前项目默认直接比较 R/T 两段光谱，不再把吸收率误差作为主训练目标。
+    # 为了兼容历史配置，这里仍保留 absorption_rmse 别名；
+    # 同时显式支持只看 R 或只看 T 的误差指标。
+    if metric in {"rt_rmse", "rmse"}:
+        return float(np.sqrt(np.mean(np.square(predicted - target))))
+    if metric in {"rt_mae", "mae"}:
+        return float(np.mean(np.abs(predicted - target)))
+    if metric == "r_rmse":
+        pred_r, _ = split_rt_spectrum(predicted)
+        target_r, _ = split_rt_spectrum(target)
+        return float(np.sqrt(np.mean(np.square(pred_r - target_r))))
+    if metric == "t_rmse":
+        _, pred_t = split_rt_spectrum(predicted)
+        _, target_t = split_rt_spectrum(target)
+        return float(np.sqrt(np.mean(np.square(pred_t - target_t))))
     if metric == "absorption_rmse":
         pred_r, pred_t = split_rt_spectrum(predicted)
         target_r, target_t = split_rt_spectrum(target)
         pred_a = absorption_curve(pred_r, pred_t)
         target_a = absorption_curve(target_r, target_t)
         return float(np.sqrt(np.mean(np.square(pred_a - target_a))))
-    if metric == "mae":
-        return float(np.mean(np.abs(predicted - target)))
-    if metric == "rmse":
-        return float(np.sqrt(np.mean(np.square(predicted - target))))
     raise ValueError(f"不支持的误差指标: {metric}")
 
 
