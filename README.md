@@ -110,6 +110,7 @@ torchrun --nproc_per_node=4 runners/run_spectral_sft.py --config configs/sft/spe
 - `outputs/eval/<experiment>_<timestamp>/metrics/*.csv`
 - `outputs/eval/<experiment>_<timestamp>/samples/*.jsonl`
 - `outputs/eval/<experiment>_<timestamp>/plots/<split>/rankXX/*.png`
+- `outputs/eval/<experiment>_<timestamp>/plots/summary/<split>_distribution.png`
 
 光谱损失微调输出：
 

@@ -6,16 +6,23 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from datasets import build_distributed_sampler, optogpt_batch_collator
 from losses import evaluate_generated_structures, masked_mean_negative_logprob
 from models.optogpt import build_decode_config, generate_structures_for_targets, sequence_logprobs_multi_target_batch_tensor
+from physics.spectrum import spectrum_error
 from utils.dist import DistributedContext, barrier
 from utils.logging import append_jsonl, write_summary_csv
-from utils.plotting import save_spectrum_comparison_plot
-from .metrics import MetricAccumulator, reduce_metric_accumulator
+from utils.plotting import save_eval_distribution_summary, save_spectrum_comparison_plot
+from .metrics import (
+    DistributionPlotAccumulator,
+    MetricAccumulator,
+    reduce_distribution_plot_accumulator,
+    reduce_metric_accumulator,
+)
 
 
 class SpectrumEvaluator:
@@ -47,6 +54,13 @@ class SpectrumEvaluator:
         self.save_samples = bool(evaluation_cfg.get("save_samples", False))
         self.save_plots = bool(evaluation_cfg.get("save_plots", False))
         self.plot_max_samples = max(0, int(evaluation_cfg.get("plot_max_samples", 0)))
+        self.save_distribution_plots = bool(evaluation_cfg.get("save_distribution_plots", True))
+        distribution_cfg = evaluation_cfg.get("distribution_plots", {})
+        self.rt_rmse_bins = max(1, int(distribution_cfg.get("rt_rmse_bins", 100)))
+        self.rt_rmse_max = float(distribution_cfg.get("rt_rmse_max", 1.0))
+        self.sequence_loss_bins = max(1, int(distribution_cfg.get("sequence_loss_bins", 100)))
+        self.sequence_loss_max = float(distribution_cfg.get("sequence_loss_max", 10.0))
+        self.length_max = int(distribution_cfg.get("length_max", tmm_cfg.get("fixed_max_layers", 20) or 20))
         self.decode_config = build_decode_config(sampling_cfg, default_max_len=self.model.max_len)
         self.metric = str(tmm_cfg.get("metric", config["losses"]["spectrum_metric"]))
         self.materials_dir = str(config["paths"]["materials_dir"])
@@ -64,8 +78,12 @@ class SpectrumEvaluator:
             "physical_tolerance": float(config["losses"].get("physical_tolerance", 0.01)),
             "database_path": self.materials_dir,
             "material_aliases": tmm_cfg.get("material_aliases", {}),
-            # 若要画图，就必须保留生成结构对应的光谱曲线。
-            "return_spectra": bool(evaluation_cfg.get("save_predicted_spectra", False) or self.save_plots),
+            # 若要画样本图或统计图，就必须保留生成结构对应的光谱曲线。
+            "return_spectra": bool(
+                evaluation_cfg.get("save_predicted_spectra", False)
+                or self.save_plots
+                or self.save_distribution_plots
+            ),
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
             "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
             "fixed_max_layers": tmm_cfg.get("fixed_max_layers"),
@@ -93,6 +111,9 @@ class SpectrumEvaluator:
 
     def _plot_output_dir(self, split_name: str) -> Path:
         return self.plots_dir / split_name / f"rank{self.dist_ctx.rank:02d}"
+
+    def _distribution_plot_output_path(self, split_name: str) -> Path:
+        return self.plots_dir / "summary" / f"{split_name}_distribution.png"
 
     def _make_progress(self, iterable, total: int, desc: str):
         """仅在主进程显示按 batch 数量统计的 tqdm 进度条。"""
@@ -133,6 +154,17 @@ class SpectrumEvaluator:
 
         self.model.raw_model.eval()
         metric_accumulator = MetricAccumulator()
+        distribution_accumulator = (
+            DistributionPlotAccumulator(
+                rt_rmse_bins=self.rt_rmse_bins,
+                rt_rmse_max=self.rt_rmse_max,
+                sequence_loss_bins=self.sequence_loss_bins,
+                sequence_loss_max=self.sequence_loss_max,
+                length_max=self.length_max,
+            )
+            if self.save_distribution_plots
+            else None
+        )
         sample_output_path = self._sample_output_path(split_name)
         plot_output_dir = self._plot_output_dir(split_name)
         plots_saved = 0
@@ -206,6 +238,22 @@ class SpectrumEvaluator:
                             "status": str(spectrum_result["status"]),
                         },
                     )
+                if distribution_accumulator is not None:
+                    predicted_spectrum = spectrum_result.get("predicted_spectrum")
+                    if predicted_spectrum is None:
+                        r_rmse = self.rt_rmse_max
+                        t_rmse = self.rt_rmse_max
+                    else:
+                        target_spectrum_np = np.asarray(target_spectrum, dtype=np.float32)
+                        r_rmse = spectrum_error(predicted_spectrum, target_spectrum_np, metric="r_rmse")
+                        t_rmse = spectrum_error(predicted_spectrum, target_spectrum_np, metric="t_rmse")
+                    distribution_accumulator.update(
+                        r_rmse=float(r_rmse),
+                        t_rmse=float(t_rmse),
+                        sequence_loss=float(sequence_loss),
+                        generated_length=len(generated_item.structure_tokens),
+                        target_length=len(gt_tokens),
+                    )
                 if self.save_plots and plots_saved < self.plot_max_samples:
                     predicted_spectrum = spectrum_result.get("predicted_spectrum")
                     wavelengths_um = spectrum_result.get("wavelengths_um")
@@ -232,6 +280,11 @@ class SpectrumEvaluator:
             progress.close()
 
         merged_metrics = reduce_metric_accumulator(metric_accumulator, device=self.model.device)
+        merged_distribution = (
+            reduce_distribution_plot_accumulator(distribution_accumulator, device=self.model.device)
+            if distribution_accumulator is not None
+            else None
+        )
         barrier()
         if not self.dist_ctx.is_main:
             return None
@@ -241,6 +294,18 @@ class SpectrumEvaluator:
             checkpoint_path=self.model.checkpoint_path,
         )
         write_summary_csv(self._summary_output_path(split_name), [summary_row])
+        if merged_distribution is not None:
+            save_eval_distribution_summary(
+                path=self._distribution_plot_output_path(split_name),
+                split_name=split_name,
+                r_rmse_hist=merged_distribution.r_rmse_hist,
+                t_rmse_hist=merged_distribution.t_rmse_hist,
+                sequence_loss_hist=merged_distribution.sequence_loss_hist,
+                length_heatmap=merged_distribution.length_heatmap,
+                rt_rmse_max=self.rt_rmse_max,
+                sequence_loss_max=self.sequence_loss_max,
+                length_max=self.length_max,
+            )
         self._log(
             f"[eval:{split_name}] samples={summary_row['sample_count']} "
             f"seq={summary_row['mean_sequence_loss']:.6f} "

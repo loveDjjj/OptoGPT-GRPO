@@ -169,3 +169,85 @@ def save_spectrum_comparison_plot(
     figure.tight_layout()
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
+
+
+def save_eval_distribution_summary(
+    path: str | Path,
+    split_name: str,
+    r_rmse_hist: Sequence[float],
+    t_rmse_hist: Sequence[float],
+    sequence_loss_hist: Sequence[float],
+    length_heatmap: Sequence[Sequence[float]],
+    rt_rmse_max: float,
+    sequence_loss_max: float,
+    length_max: int,
+) -> None:
+    """保存评测统计图总览。
+
+    图像布局：
+    1. R-RMSE 直方图
+    2. T-RMSE 直方图
+    3. 生成长度 vs 真值长度 2D 热力图
+    4. 序列误差直方图
+
+    这里直接基于已经累计好的计数作图，避免再次扫描样本。
+    """
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError("matplotlib is required to save evaluation distribution plots.") from exc
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    r_rmse_hist = np.asarray(r_rmse_hist, dtype=np.float64)
+    t_rmse_hist = np.asarray(t_rmse_hist, dtype=np.float64)
+    sequence_loss_hist = np.asarray(sequence_loss_hist, dtype=np.float64)
+    length_heatmap = np.asarray(length_heatmap, dtype=np.float64)
+
+    rt_edges = np.linspace(0.0, float(rt_rmse_max), int(r_rmse_hist.size) + 1, dtype=np.float64)
+    seq_edges = np.linspace(0.0, float(sequence_loss_max), int(sequence_loss_hist.size) + 1, dtype=np.float64)
+    rt_centers = 0.5 * (rt_edges[:-1] + rt_edges[1:])
+    seq_centers = 0.5 * (seq_edges[:-1] + seq_edges[1:])
+    rt_width = rt_edges[1] - rt_edges[0]
+    seq_width = seq_edges[1] - seq_edges[0]
+
+    figure, axes = plt.subplots(2, 2, figsize=(14, 10))
+    figure.suptitle(f"Evaluation Distribution Summary | split={split_name}")
+
+    axes[0, 0].bar(rt_centers, r_rmse_hist, width=rt_width * 0.95, color="#4C78A8", alpha=0.9)
+    axes[0, 0].set_title("R-RMSE vs Count")
+    axes[0, 0].set_xlabel("R-RMSE")
+    axes[0, 0].set_ylabel("Count")
+    axes[0, 0].grid(alpha=0.2)
+
+    axes[0, 1].bar(rt_centers, t_rmse_hist, width=rt_width * 0.95, color="#F58518", alpha=0.9)
+    axes[0, 1].set_title("T-RMSE vs Count")
+    axes[0, 1].set_xlabel("T-RMSE")
+    axes[0, 1].set_ylabel("Count")
+    axes[0, 1].grid(alpha=0.2)
+
+    heatmap = axes[1, 0].imshow(
+        length_heatmap,
+        origin="lower",
+        interpolation="nearest",
+        aspect="auto",
+        cmap="Greys",
+        extent=[0, length_max, 0, length_max],
+    )
+    axes[1, 0].set_title("Generated Length vs Target Length")
+    axes[1, 0].set_xlabel("Generated Length")
+    axes[1, 0].set_ylabel("Target Length")
+    cbar = figure.colorbar(heatmap, ax=axes[1, 0], fraction=0.046, pad=0.04)
+    cbar.set_label("Count")
+
+    axes[1, 1].bar(seq_centers, sequence_loss_hist, width=seq_width * 0.95, color="#54A24B", alpha=0.9)
+    axes[1, 1].set_title("Sequence Loss vs Count")
+    axes[1, 1].set_xlabel("Sequence Loss")
+    axes[1, 1].set_ylabel("Count")
+    axes[1, 1].grid(alpha=0.2)
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180)
+    plt.close(figure)
