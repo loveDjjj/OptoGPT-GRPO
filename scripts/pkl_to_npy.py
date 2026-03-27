@@ -25,14 +25,20 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     data = _load_pickle(input_path)
-    # 结构数据是变长 token 列表，这里会保存成 object 数组；
-    # 光谱数据通常会保存成 float32 二维数组。
+    # 结构数据是变长 token 列表，这里保存为 object 数组；
+    # 光谱数据通常是 float64 ndarray，这里主动压缩为 float32，
+    # 可以显著降低磁盘体积、进程间重复读取开销和主机内存压力。
     if isinstance(data, np.ndarray):
-        array = data
+        if np.issubdtype(data.dtype, np.floating):
+            array = data.astype(np.float32, copy=False)
+        else:
+            array = data
     else:
-        array = np.asarray(data, dtype=object if data and isinstance(data[0], (list, tuple, str)) else None)
+        is_structure_like = bool(data) and isinstance(data[0], (list, tuple, str))
+        array = np.asarray(data, dtype=object if is_structure_like else None)
     np.save(output_path, array, allow_pickle=True)
     print(f"已转换: {input_path} -> {output_path}")
+    print(f"dtype={array.dtype}, shape={getattr(array, 'shape', None)}")
 
 
 if __name__ == "__main__":

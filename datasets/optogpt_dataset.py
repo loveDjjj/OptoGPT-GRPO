@@ -20,7 +20,12 @@ def _load_array_or_pickle(path: str | Path) -> Any:
     file_path = Path(path)
     suffix = file_path.suffix.lower()
     if suffix == ".npy":
-        return np.load(file_path, mmap_mode="r")
+        # 数值数组优先使用内存映射，减少多卡场景下的重复常驻内存；
+        # object 数组（例如变长结构 token）无法 memmap，需要退回普通加载。
+        try:
+            return np.load(file_path, mmap_mode="r", allow_pickle=True)
+        except ValueError:
+            return np.load(file_path, allow_pickle=True)
     if suffix == ".pkl":
         with file_path.open("rb") as handle:
             return pkl.load(handle)
@@ -33,18 +38,18 @@ class OptoGPTPairDataset(Dataset):
     def __init__(
         self,
         spectrum_path: str | Path,
-        structure_path: str | Path,
+        structure_path: str | Path | None,
         start_index: int = 0,
         stop_index: int | None = None,
         max_samples: int | None = None,
     ) -> None:
         self.spectrum_path = Path(spectrum_path)
-        self.structure_path = Path(structure_path)
+        self.structure_path = None if structure_path is None else Path(structure_path)
         self._spectra = _load_array_or_pickle(self.spectrum_path)
-        self._structures = _load_array_or_pickle(self.structure_path)
+        self._structures = None if self.structure_path is None else _load_array_or_pickle(self.structure_path)
 
         total_count = len(self._spectra)
-        if total_count != len(self._structures):
+        if self._structures is not None and total_count != len(self._structures):
             raise ValueError("光谱数据与结构数据的样本数不一致。")
 
         resolved_start = max(0, int(start_index))
@@ -61,7 +66,13 @@ class OptoGPTPairDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample_index = int(self.indices[index])
         spectrum = np.asarray(self._spectra[sample_index], dtype=np.float32)
-        structure_tokens = [str(token) for token in self._structures[sample_index]]
+        # 训练阶段如果只优化光谱损失，则不需要真值结构。
+        # 允许 structure_path 为空，可以避免每个 rank 都加载超大的 object 数组，
+        # 显著降低多卡启动时的 CPU 内存与磁盘 I/O 压力。
+        if self._structures is None:
+            structure_tokens: list[str] = []
+        else:
+            structure_tokens = [str(token) for token in self._structures[sample_index]]
         return {
             "sample_index": sample_index,
             "spectrum": spectrum,
@@ -76,5 +87,5 @@ class OptoGPTPairDataset(Dataset):
         return int(first.size)
 
     @property
-    def raw_structure_store(self) -> Sequence[Any]:
+    def raw_structure_store(self) -> Sequence[Any] | None:
         return self._structures

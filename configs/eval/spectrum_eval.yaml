@@ -23,16 +23,19 @@ paths:
 
 data:
   # 训练集路径
-  train_spectrum_path: dataset/Spectrum_train.pkl
-  train_structure_path: dataset/Structure_train.pkl
+  train_spectrum_path: dataset/Spectrum_train.npy
+  train_structure_path: dataset/Structure_train.npy
   # 当前默认把原 test 集当作验证集使用
-  val_spectrum_path: dataset/Spectrum_test.pkl
-  val_structure_path: dataset/Structure_test.pkl
+  val_spectrum_path: dataset/Spectrum_test.npy
+  val_structure_path: dataset/Structure_test.npy
   # 可选：只评测前若干条样本，便于快速调试；null 表示全量
   max_train_samples: null
   max_val_samples: null
-  num_workers: 0
+  # 若使用 npy 数据，建议至少开到 4；Windows 下也可以逐步试 2/4/8。
+  # 若是 4-8 卡长期评测，Linux + NCCL 的跨卡通信效率通常优于 Windows + Gloo。
+  num_workers: 4
   pin_memory: true
+  prefetch_factor: 2
   # 若未来希望从训练集内部切验证集，可启用该比例
   val_ratio: 0.0
 
@@ -66,6 +69,8 @@ tmm:
   material_aliases: {}
   batch_size: 128
   pad_to_max_layers: true
+  # 按层数分桶可减少不同结构长度混跑时的 padding 浪费。
+  bucket_by_layer_count: true
   pad_material: Air
   debug: false
   # 这里只是为了保持配置结构统一，实际使用的指标由 losses.spectrum_metric 控制

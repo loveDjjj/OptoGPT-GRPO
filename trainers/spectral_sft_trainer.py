@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import torch
+from contextlib import nullcontext
 from torch.utils.data import DataLoader
 
 from datasets import build_distributed_sampler, optogpt_batch_collator
@@ -50,6 +51,7 @@ class SpectralSFTTrainer:
         self.train_num_samples_per_target = int(training_cfg.get("num_samples_per_target", 1))
         self.num_workers = int(data_cfg.get("num_workers", 0))
         self.pin_memory = bool(data_cfg.get("pin_memory", False))
+        self.prefetch_factor = int(data_cfg.get("prefetch_factor", 2))
         self.save_best = bool(training_cfg.get("save_best", True))
         self.save_final = bool(training_cfg.get("save_final", True))
         self.console_log = bool(logging_cfg.get("console_log", True))
@@ -68,6 +70,7 @@ class SpectralSFTTrainer:
             "material_aliases": tmm_cfg.get("material_aliases", {}),
             "return_spectra": False,
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
+            "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
             "batch_size": int(tmm_cfg.get("batch_size", self.batch_size)),
             "tmm_debug": bool(tmm_cfg.get("debug", False)),
@@ -100,7 +103,12 @@ class SpectralSFTTrainer:
         reduced = reduce_tensor(tensor, op="mean")
         return float(reduced.item())
 
-    def _train_batch(self, spectra: Sequence[Sequence[float]], sample_indices: Sequence[int]) -> tuple[float, float, float]:
+    def _train_batch(
+        self,
+        spectra: Sequence[Sequence[float]],
+        sample_indices: Sequence[int],
+        sync_gradients: bool,
+    ) -> tuple[float, float, float]:
         """执行一个训练 batch。
 
         这里采用的是“光谱风险最小化”式目标：
@@ -128,37 +136,42 @@ class SpectralSFTTrainer:
             **self.tmm_kwargs,
         )
         token_id_groups = [item.token_ids for item in generated]
-        logprobs, token_mask = sequence_logprobs_multi_target_batch_tensor(
-            model=self.model,
-            target_spectra=expanded_spectra,
-            token_id_groups=token_id_groups,
-            start_symbol=self.train_decode_config.start_symbol,
-            start_mat=self.train_decode_config.start_mat,
-            require_grad=True,
-            batch_size=self.batch_size,
-        )
-        if logprobs.numel() == 0:
-            return 0.0, 0.0, 0.0
+        sync_context = nullcontext()
+        if not sync_gradients and hasattr(self.model.model, "no_sync"):
+            sync_context = self.model.model.no_sync()
 
-        token_mask_float = token_mask.to(dtype=logprobs.dtype)
-        lengths = token_mask.sum(dim=-1).clamp_min(1).to(dtype=logprobs.dtype)
-        sequence_logprob = (logprobs * token_mask_float).sum(dim=-1)
-        if self.normalize_logprob_by_length:
-            sequence_logprob = sequence_logprob / lengths
+        with sync_context:
+            logprobs, token_mask = sequence_logprobs_multi_target_batch_tensor(
+                model=self.model,
+                target_spectra=expanded_spectra,
+                token_id_groups=token_id_groups,
+                start_symbol=self.train_decode_config.start_symbol,
+                start_mat=self.train_decode_config.start_mat,
+                require_grad=True,
+                batch_size=self.batch_size,
+            )
+            if logprobs.numel() == 0:
+                return 0.0, 0.0, 0.0
 
-        spectrum_loss_tensor = torch.tensor(
-            [float(item["spectrum_loss"]) for item in spectrum_results],
-            dtype=logprobs.dtype,
-            device=self.model.device,
-        )
-        valid_ratio = float(np.mean([1.0 if item["status"] == "ok" else 0.0 for item in spectrum_results]))
+            token_mask_float = token_mask.to(dtype=logprobs.dtype)
+            lengths = token_mask.sum(dim=-1).clamp_min(1).to(dtype=logprobs.dtype)
+            sequence_logprob = (logprobs * token_mask_float).sum(dim=-1)
+            if self.normalize_logprob_by_length:
+                sequence_logprob = sequence_logprob / lengths
 
-        weight_tensor = spectrum_loss_tensor
-        if self.center_spectrum_loss and spectrum_loss_tensor.numel() > 1:
-            weight_tensor = spectrum_loss_tensor - spectrum_loss_tensor.mean()
+            spectrum_loss_tensor = torch.tensor(
+                [float(item["spectrum_loss"]) for item in spectrum_results],
+                dtype=logprobs.dtype,
+                device=self.model.device,
+            )
+            valid_ratio = float(np.mean([1.0 if item["status"] == "ok" else 0.0 for item in spectrum_results]))
 
-        objective = torch.mean(weight_tensor.detach() * sequence_logprob)
-        objective.backward()
+            weight_tensor = spectrum_loss_tensor
+            if self.center_spectrum_loss and spectrum_loss_tensor.numel() > 1:
+                weight_tensor = spectrum_loss_tensor - spectrum_loss_tensor.mean()
+
+            objective = torch.mean(weight_tensor.detach() * sequence_logprob)
+            objective.backward()
 
         return (
             float(objective.detach().cpu().item()),
@@ -173,15 +186,19 @@ class SpectralSFTTrainer:
             seed=int(self.config["experiment"]["seed"]),
             drop_last=False,
         )
-        dataloader = DataLoader(
-            train_dataset,
-            batch_size=self.batch_size,
-            shuffle=False if sampler is not None else True,
-            sampler=sampler,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=optogpt_batch_collator,
-        )
+        dataloader_kwargs = {
+            "dataset": train_dataset,
+            "batch_size": self.batch_size,
+            "shuffle": False if sampler is not None else True,
+            "sampler": sampler,
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+            "persistent_workers": bool(self.num_workers > 0),
+            "collate_fn": optogpt_batch_collator,
+        }
+        if self.num_workers > 0:
+            dataloader_kwargs["prefetch_factor"] = self.prefetch_factor
+        dataloader = DataLoader(**dataloader_kwargs)
 
         train_rows: list[dict] = []
         best_val_spectrum = float("inf")
@@ -204,6 +221,7 @@ class SpectralSFTTrainer:
                 batch_objective, batch_spectrum_loss, batch_valid_ratio = self._train_batch(
                     spectra=batch["spectra"],
                     sample_indices=batch["sample_indices"].tolist(),
+                    sync_gradients=(accum_counter >= self.grad_accum_steps),
                 )
                 epoch_objectives.append(batch_objective)
                 epoch_spectrum_losses.append(batch_spectrum_loss)

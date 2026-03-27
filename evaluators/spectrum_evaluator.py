@@ -41,6 +41,7 @@ class SpectrumEvaluator:
         self.scoring_batch_size = int(evaluation_cfg.get("scoring_batch_size", self.batch_size))
         self.num_workers = int(data_cfg.get("num_workers", 0))
         self.pin_memory = bool(data_cfg.get("pin_memory", False))
+        self.prefetch_factor = int(data_cfg.get("prefetch_factor", 2))
         self.save_samples = bool(evaluation_cfg.get("save_samples", False))
         self.decode_config = build_decode_config(sampling_cfg, default_max_len=self.model.max_len)
         self.metric = str(tmm_cfg.get("metric", config["losses"]["spectrum_metric"]))
@@ -60,6 +61,7 @@ class SpectrumEvaluator:
             "material_aliases": tmm_cfg.get("material_aliases", {}),
             "return_spectra": bool(evaluation_cfg.get("save_predicted_spectra", False)),
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
+            "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
             "batch_size": int(tmm_cfg.get("batch_size", self.batch_size)),
             "tmm_debug": bool(tmm_cfg.get("debug", False)),
@@ -89,15 +91,19 @@ class SpectrumEvaluator:
             seed=int(self.config["experiment"]["seed"]),
             drop_last=False,
         )
-        dataloader = DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=False if sampler is not None else False,
-            sampler=sampler,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=optogpt_batch_collator,
-        )
+        dataloader_kwargs = {
+            "dataset": dataset,
+            "batch_size": self.batch_size,
+            "shuffle": False if sampler is not None else False,
+            "sampler": sampler,
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+            "persistent_workers": bool(self.num_workers > 0),
+            "collate_fn": optogpt_batch_collator,
+        }
+        if self.num_workers > 0:
+            dataloader_kwargs["prefetch_factor"] = self.prefetch_factor
+        dataloader = DataLoader(**dataloader_kwargs)
 
         self.model.raw_model.eval()
         metric_accumulator = MetricAccumulator()

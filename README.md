@@ -31,7 +31,7 @@
 - `data/materials/`
   原 `nk/` 材料库。
 - `dataset/`
-  当前使用的 `Spectrum_*.pkl` 与 `Structure_*.pkl`。
+  当前使用的 `Spectrum_*.npy` 与 `Structure_*.npy`。
 - `core/`
   旧 checkpoint 兼容层，保留但不扩展新逻辑。
 
@@ -39,11 +39,11 @@
 当前默认使用：
 
 - 训练集：
-  [dataset/Spectrum_train.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_train.pkl)
-  [dataset/Structure_train.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_train.pkl)
+  [dataset/Spectrum_train.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_train.npy)
+  [dataset/Structure_train.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_train.npy)
 - 验证集：
-  [dataset/Spectrum_test.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_test.pkl)
-  [dataset/Structure_test.pkl](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_test.pkl)
+  [dataset/Spectrum_test.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_test.npy)
+  [dataset/Structure_test.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_test.npy)
 
 如果后续需要严格划分 `train/val/test`，可以：
 
@@ -98,6 +98,8 @@ torchrun --nproc_per_node=4 runners/run_spectral_sft.py --config configs/sft/spe
 - 开发调试：`1-2 卡`
 - 正式训练：`4 卡`最合适
 - 大规模评测：`4-8 卡`都可以
+- `spectral_sft` 训练阶段默认跳过 `Structure_train.npy` 加载，避免每个 rank 重复占用大块主机内存。
+- 如果要长期跑 `4-8 卡`，更推荐 `Linux + NCCL`；当前 Windows 环境会退回到 `Gloo`。
 
 如果没有 NVLink，也仍然可以跑；只是对当前任务来说，`4 卡`通常比 `8 卡`更均衡。
 

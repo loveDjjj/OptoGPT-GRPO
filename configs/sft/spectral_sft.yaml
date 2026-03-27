@@ -16,15 +16,21 @@ paths:
   materials_dir: data/materials
 
 data:
-  train_spectrum_path: dataset/Spectrum_train.pkl
-  train_structure_path: dataset/Structure_train.pkl
+  train_spectrum_path: dataset/Spectrum_train.npy
+  train_structure_path: dataset/Structure_train.npy
+  # spectral SFT 训练阶段不依赖训练集真值结构。
+  # 打开后可避免每个 rank 都加载超大的 Structure_train.npy，加快多卡启动。
+  skip_train_structure_loading: true
   # 当前阶段默认把原 test 集作为验证集
-  val_spectrum_path: dataset/Spectrum_test.pkl
-  val_structure_path: dataset/Structure_test.pkl
+  val_spectrum_path: dataset/Spectrum_test.npy
+  val_structure_path: dataset/Structure_test.npy
   max_train_samples: null
   max_val_samples: 4096
-  num_workers: 0
+  # npy 适合配合多 worker 读取；正式多卡训练建议从 4 开始试。
+  # 若使用 Windows，多卡通信只能走 Gloo；4-8 卡正式训练更建议 Linux + NCCL。
+  num_workers: 4
   pin_memory: true
+  prefetch_factor: 2
   val_ratio: 0.0
 
 sampling:
@@ -83,6 +89,7 @@ tmm:
   material_aliases: {}
   batch_size: 128
   pad_to_max_layers: true
+  bucket_by_layer_count: true
   pad_material: Air
   debug: false
   metric: absorption_rmse

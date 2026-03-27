@@ -12,14 +12,19 @@ from .optogpt_dataset import OptoGPTPairDataset
 def build_split_datasets(config: Dict[str, Any]) -> Dict[str, OptoGPTPairDataset | Subset]:
     """按配置构造 train / val 数据集。
 
-    当前仓库已有 `train/test` 两份 pkl。这里优先支持显式给出验证集路径；
-    如果没有给出，再退回到“从训练集内部切一份验证集”。
+    优先读取显式给出的 train/test(or val) 文件；
+    如果没有给出验证集路径，再退回到“从训练集内部切一份验证集”。
     """
 
     data_cfg = config["data"]
+    # spectral SFT 训练阶段只依赖目标光谱，不依赖真值结构。
+    # 当该开关打开时，可以避免把超大的 Structure_train.npy
+    # 在每个 DDP rank 中各加载一份。
+    skip_train_structure_loading = bool(data_cfg.get("skip_train_structure_loading", False))
+
     train_dataset = OptoGPTPairDataset(
         spectrum_path=data_cfg["train_spectrum_path"],
-        structure_path=data_cfg["train_structure_path"],
+        structure_path=None if skip_train_structure_loading else data_cfg["train_structure_path"],
         max_samples=data_cfg.get("max_train_samples"),
     )
 
