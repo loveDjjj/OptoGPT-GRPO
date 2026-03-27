@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from typing import List, Mapping, Optional, Sequence
 
 import torch
-from torch.autograd import Variable
 
 from core.transformer import subsequent_mask
 from .checkpoint import OptoGPTModel
+
+
+_SUBSEQUENT_MASK_CACHE: dict[tuple[str, str, int], torch.Tensor] = {}
 
 
 @dataclass
@@ -125,6 +127,17 @@ def _filtered_distribution_batch(
     return prob, filtered
 
 
+def _cached_subsequent_mask(length: int, reference: torch.Tensor) -> torch.Tensor:
+    """缓存下三角 mask，避免自回归每一步都重新在 CPU 构造。"""
+
+    cache_key = (str(reference.device), str(reference.dtype), int(length))
+    cached = _SUBSEQUENT_MASK_CACHE.get(cache_key)
+    if cached is None:
+        cached = subsequent_mask(length).type_as(reference).to(reference.device)
+        _SUBSEQUENT_MASK_CACHE[cache_key] = cached
+    return cached
+
+
 def generate_structures_for_targets(
     model: OptoGPTModel,
     target_spectra: Sequence[Sequence[float]],
@@ -225,21 +238,35 @@ def _decode_from_src_batch(
         start_mat=decode_config.start_mat,
     )
     prompt_tensor = torch.tensor(prompt_ids, dtype=torch.long, device=model.device).unsqueeze(0)
-    ys = prompt_tensor.expand(num_samples, -1).clone()
+    prompt_len = int(prompt_tensor.size(1))
     generation_limit = int(decode_config.max_len or model.max_len)
     pad_id = int(model.struc_word_dict.get(model.pad_token, model.struc_word_dict.get("EOS", 0)))
+    eos_id = int(model.struc_word_dict[model.eos_token])
+    max_decode_steps = max(0, generation_limit - prompt_len)
 
-    generated_ids: List[List[int]] = [[] for _ in range(num_samples)]
-    generated_tokens: List[List[str]] = [[] for _ in range(num_samples)]
-    structure_tokens: List[List[str]] = [[] for _ in range(num_samples)]
-    raw_logprobs: List[List[float]] = [[] for _ in range(num_samples)]
-    terminated_by_eos = [False for _ in range(num_samples)]
+    # 预先分配整个解码张量，避免每一步 `torch.cat` 造成的重复显存分配。
+    ys = torch.full(
+        (num_samples, generation_limit),
+        pad_id,
+        dtype=torch.long,
+        device=model.device,
+    )
+    ys[:, :prompt_len] = prompt_tensor
+    step_logprobs = torch.zeros(
+        (num_samples, max_decode_steps),
+        dtype=torch.float32,
+        device=model.device,
+    )
+    generated_lengths = torch.zeros((num_samples,), dtype=torch.long, device=model.device)
+    terminated_by_eos = torch.zeros((num_samples,), dtype=torch.bool, device=model.device)
     active_mask = torch.ones(num_samples, dtype=torch.bool, device=model.device)
+    current_len = prompt_len
+    step_idx = 0
 
-    with torch.no_grad():
-        while ys.size(1) < generation_limit and bool(active_mask.any().item()):
-            trg_mask = Variable(subsequent_mask(ys.size(1)).type_as(src.data)).to(model.device)
-            out = model.model(src, ys, None, trg_mask)
+    with torch.inference_mode():
+        while current_len < generation_limit and bool(active_mask.any().item()):
+            trg_mask = _cached_subsequent_mask(current_len, src.data)
+            out = model.model(src, ys[:, :current_len], None, trg_mask)
             raw_log_prob = model.generator(out[:, -1])
             _, sample_prob = _filtered_distribution_batch(raw_log_prob, decode_config)
 
@@ -250,39 +277,34 @@ def _decode_from_src_batch(
 
             step_raw_logprob = raw_log_prob.gather(1, next_ids.unsqueeze(-1)).squeeze(-1)
             next_ids_to_append = torch.where(active_mask, next_ids, torch.full_like(next_ids, pad_id))
-            ys = torch.cat([ys, next_ids_to_append.unsqueeze(1)], dim=1)
-
-            active_indices = torch.nonzero(active_mask, as_tuple=False).view(-1).tolist()
-            finished_indices: List[int] = []
-            for idx in active_indices:
-                next_id = int(next_ids[idx].item())
-                token = model.token_id_to_str(next_id)
-                generated_ids[idx].append(next_id)
-                generated_tokens[idx].append(token)
-                raw_logprobs[idx].append(float(step_raw_logprob[idx].item()))
-                if token == model.eos_token:
-                    terminated_by_eos[idx] = True
-                    finished_indices.append(idx)
-                elif token not in {model.bos_token, model.pad_token, "UNK"}:
-                    structure_tokens[idx].append(token)
-
-            if finished_indices:
-                active_mask[torch.tensor(finished_indices, dtype=torch.long, device=model.device)] = False
+            ys[:, current_len] = next_ids_to_append
+            step_logprobs[:, step_idx] = torch.where(active_mask, step_raw_logprob, torch.zeros_like(step_raw_logprob))
+            generated_lengths = generated_lengths + active_mask.to(dtype=torch.long)
+            eos_finished = active_mask & next_ids.eq(eos_id)
+            terminated_by_eos = terminated_by_eos | eos_finished
+            active_mask = active_mask & ~eos_finished
+            current_len += 1
+            step_idx += 1
 
     samples: List[GeneratedStructure] = []
+    generated_token_ids = ys[:, prompt_len:current_len]
     for sample_idx in range(num_samples):
+        token_count = int(generated_lengths[sample_idx].item())
+        token_ids = generated_token_ids[sample_idx, :token_count].tolist()
+        raw_logprob_list = step_logprobs[sample_idx, :token_count].tolist()
+        tokens = [model.token_id_to_str(token_id) for token_id in token_ids]
         samples.append(
             GeneratedStructure(
                 target_index=target_indices[sample_idx],
                 candidate_index=int(candidate_indices[sample_idx]),
                 prompt_ids=list(prompt_ids),
-                token_ids=generated_ids[sample_idx],
-                tokens=generated_tokens[sample_idx],
-                structure_tokens=structure_tokens[sample_idx],
-                raw_logprobs=raw_logprobs[sample_idx],
-                sequence_raw_logprob=float(sum(raw_logprobs[sample_idx])),
-                terminated_by_eos=terminated_by_eos[sample_idx],
-                max_len_reached=not terminated_by_eos[sample_idx],
+                token_ids=token_ids,
+                tokens=tokens,
+                structure_tokens=model.token_ids_to_structure_tokens(token_ids, stop_at_eos=True),
+                raw_logprobs=raw_logprob_list,
+                sequence_raw_logprob=float(sum(raw_logprob_list)),
+                terminated_by_eos=bool(terminated_by_eos[sample_idx].item()),
+                max_len_reached=not bool(terminated_by_eos[sample_idx].item()),
                 decode=decode_config.decode,
             )
         )

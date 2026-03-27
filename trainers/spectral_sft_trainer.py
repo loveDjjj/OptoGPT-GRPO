@@ -124,11 +124,21 @@ class SpectralSFTTrainer:
             unit="batch",
         )
 
+    def _update_progress_stage(self, progress, stage: str, **metrics: str) -> None:
+        """在现有 batch 进度条上补充当前子阶段，便于定位卡顿位置。"""
+
+        if not hasattr(progress, "set_postfix"):
+            return
+        payload = {"stage": stage}
+        payload.update(metrics)
+        progress.set_postfix(payload, refresh=False)
+
     def _train_batch(
         self,
         spectra: Sequence[Sequence[float]],
         sample_indices: Sequence[int],
         sync_gradients: bool,
+        progress=None,
     ) -> tuple[torch.Tensor, torch.Tensor, float]:
         """执行一个训练 batch。
 
@@ -140,6 +150,7 @@ class SpectralSFTTrainer:
         这不是 PPO/GRPO，也不引入参考模型和裁剪项；训练目标完全来自光谱误差。
         """
 
+        self._update_progress_stage(progress, "generate")
         generated = generate_structures_for_targets(
             model=self.model,
             target_spectra=spectra,
@@ -156,6 +167,7 @@ class SpectralSFTTrainer:
                 expanded_spectra.extend(list(spectra))
         # 训练阶段只需要光谱损失和有效样本掩码，不需要逐样本 dict。
         # 这里直接走批量数组快路，减少 Python 对象构造和二次遍历。
+        self._update_progress_stage(progress, "tmm")
         spectrum_aux = evaluate_generated_structures(
             structure_token_groups=[item.structure_tokens for item in generated],
             target_spectra=expanded_spectra,
@@ -169,6 +181,7 @@ class SpectralSFTTrainer:
             sync_context = self.model.model.no_sync()
 
         with sync_context:
+            self._update_progress_stage(progress, "score")
             logprobs, token_mask = sequence_logprobs_multi_target_batch_tensor(
                 model=self.model,
                 target_spectra=expanded_spectra,
@@ -204,6 +217,7 @@ class SpectralSFTTrainer:
             # 高于 batch 均值的样本得到正权重，会被压低概率。
             # 这条语义依赖 center_spectrum_loss=True，因此保持显式注释。
             objective = torch.mean(weight_tensor.detach() * sequence_logprob)
+            self._update_progress_stage(progress, "backward")
             objective.backward()
 
         return (
@@ -261,6 +275,7 @@ class SpectralSFTTrainer:
                     spectra=batch["spectra"],
                     sample_indices=batch["sample_indices"].tolist(),
                     sync_gradients=(accum_counter >= self.grad_accum_steps),
+                    progress=progress,
                 )
                 epoch_objective_sum = epoch_objective_sum + batch_objective_tensor
                 epoch_spectrum_sum = epoch_spectrum_sum + batch_spectrum_loss_tensor

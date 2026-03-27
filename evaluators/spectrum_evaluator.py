@@ -133,6 +133,15 @@ class SpectrumEvaluator:
             unit="batch",
         )
 
+    def _update_progress_stage(self, progress, stage: str, **metrics: str) -> None:
+        """在现有 batch 进度条上补充当前子阶段，方便观察卡顿点。"""
+
+        if not hasattr(progress, "set_postfix"):
+            return
+        payload = {"stage": stage}
+        payload.update(metrics)
+        progress.set_postfix(payload, refresh=False)
+
     def _batch_rt_rmse(
         self,
         predicted_spectra: np.ndarray,
@@ -226,6 +235,7 @@ class SpectrumEvaluator:
                 sample_indices = batch["sample_indices"].tolist()
                 token_id_groups, target_lengths = self._cached_token_id_groups(sample_indices, structure_tokens)
 
+                self._update_progress_stage(progress, "score")
                 logprobs, token_mask = sequence_logprobs_multi_target_batch_tensor(
                     model=self.model,
                     target_spectra=spectra,
@@ -241,6 +251,7 @@ class SpectrumEvaluator:
                     normalize_by_length=True,
                 )
 
+                self._update_progress_stage(progress, "generate")
                 generated = generate_structures_for_targets(
                     model=self.model,
                     target_spectra=spectra,
@@ -249,6 +260,7 @@ class SpectrumEvaluator:
                     target_indices=sample_indices,
                     seeds=[int(self.config["experiment"]["seed"]) + int(sample_index) for sample_index in sample_indices],
                 )
+                self._update_progress_stage(progress, "tmm")
                 spectrum_eval_output = evaluate_generated_structures(
                     structure_token_groups=[item.structure_tokens for item in generated],
                     target_spectra=spectra,
@@ -293,6 +305,7 @@ class SpectrumEvaluator:
                     )
 
                 if needs_item_results and spectrum_results is not None:
+                    self._update_progress_stage(progress, "write")
                     for sample_index, gt_tokens, target_spectrum, sequence_loss, generated_item, spectrum_result in zip(
                         sample_indices,
                         structure_tokens,
