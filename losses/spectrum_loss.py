@@ -7,7 +7,7 @@ from typing import Any, List, Mapping, Sequence
 import numpy as np
 
 from physics import calculate_optical_properties_batch
-from physics.spectrum import flatten_rt, is_physical_spectrum, spectrum_error
+from physics.spectrum import flatten_rt, is_physical_spectrum, spectrum_error, split_rt_spectrum
 from physics.structure import (
     bucket_indices_by_layer_count,
     pad_tmm_configs_to_fixed_layers,
@@ -82,6 +82,8 @@ def evaluate_generated_structures(
 
     spectrum_losses = np.full((sample_count,), float(invalid_structure_penalty), dtype=np.float32)
     ok_mask = np.zeros((sample_count,), dtype=np.bool_)
+    r_rmse = np.full((sample_count,), float(invalid_structure_penalty), dtype=np.float32)
+    t_rmse = np.full((sample_count,), float(invalid_structure_penalty), dtype=np.float32)
     predicted_spectra = None
     has_predicted_spectrum = None
     spectrum_dim = int(normalized_targets[0].shape[0]) if sample_count > 0 else int(num_points) * 2
@@ -103,6 +105,8 @@ def evaluate_generated_structures(
                     "index": idx,
                     "structure_tokens": list(tokens),
                     "spectrum_loss": float(invalid_structure_penalty),
+                    "r_rmse": float(invalid_structure_penalty),
+                    "t_rmse": float(invalid_structure_penalty),
                     "status": f"invalid_structure: {exc}",
                 }
             continue
@@ -120,6 +124,8 @@ def evaluate_generated_structures(
         aux_arrays = {
             "spectrum_losses": spectrum_losses,
             "ok_mask": ok_mask,
+            "r_rmse": r_rmse,
+            "t_rmse": t_rmse,
         }
         if predicted_spectra is not None and has_predicted_spectrum is not None:
             aux_arrays["predicted_spectra"] = predicted_spectra
@@ -144,6 +150,8 @@ def evaluate_generated_structures(
                         "layer_count": item["layer_count"],
                         "padded_layer_count": fixed_max_layers,
                         "spectrum_loss": float(invalid_structure_penalty),
+                        "r_rmse": float(invalid_structure_penalty),
+                        "t_rmse": float(invalid_structure_penalty),
                         "status": f"too_many_layers>{fixed_max_layers}",
                     }
                 continue
@@ -215,6 +223,8 @@ def evaluate_generated_structures(
                             "layer_count": item["layer_count"],
                             "padded_layer_count": int(item.get("padded_layer_count", item["layer_count"])),
                             "spectrum_loss": float(invalid_structure_penalty),
+                            "r_rmse": float(invalid_structure_penalty),
+                            "t_rmse": float(invalid_structure_penalty),
                             "status": "tmm_failed",
                         }
                 continue
@@ -242,6 +252,8 @@ def evaluate_generated_structures(
                         result = {
                             **base_result,
                             "spectrum_loss": float(nonphysical_penalty),
+                            "r_rmse": float(nonphysical_penalty),
+                            "t_rmse": float(nonphysical_penalty),
                             "status": "nonphysical_spectrum",
                         }
                         if return_spectra:
@@ -253,12 +265,19 @@ def evaluate_generated_structures(
                     continue
 
                 error = spectrum_error(predicted_spectrum, normalized_targets[original_idx], metric=metric)
+                target_r, target_t = split_rt_spectrum(normalized_targets[original_idx])
+                r_error = spectrum_error(reflection, target_r, metric="r_rmse")
+                t_error = spectrum_error(transmission, target_t, metric="t_rmse")
                 spectrum_losses[original_idx] = float(error)
+                r_rmse[original_idx] = float(r_error)
+                t_rmse[original_idx] = float(t_error)
                 ok_mask[original_idx] = True
                 if results is not None:
                     result = {
                         **base_result,
                         "spectrum_loss": float(error),
+                        "r_rmse": float(r_error),
+                        "t_rmse": float(t_error),
                         "status": "ok",
                     }
                     if return_spectra:
@@ -271,6 +290,8 @@ def evaluate_generated_structures(
     aux_arrays = {
         "spectrum_losses": spectrum_losses,
         "ok_mask": ok_mask,
+        "r_rmse": r_rmse,
+        "t_rmse": t_rmse,
     }
     if predicted_spectra is not None and has_predicted_spectrum is not None:
         aux_arrays["predicted_spectra"] = predicted_spectra

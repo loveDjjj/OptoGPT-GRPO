@@ -25,10 +25,10 @@ data:
   val_spectrum_path: dataset/Spectrum_test.npy
   val_structure_path: dataset/Structure_test.npy
   max_train_samples: null
-  max_val_samples: 4096
+  max_val_samples: 102400
   # `num_workers > 0` 就是多进程加载。
   # 这里默认调到 8，优先改善单卡时的数据等待；多卡时若 CPU 压力过大，可按每卡 4 往回调。
-  num_workers: 8
+  num_workers: 64
   pin_memory: true
   prefetch_factor: 4
   val_ratio: 0.0
@@ -43,7 +43,7 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 128
+    batch_size: 1024
   eval:
     # 训练过程中的验证仍然使用 greedy，保证指标稳定可比
     decode: greedy
@@ -53,17 +53,17 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 128
+    batch_size: 1024
 
 training:
-  epochs: 1
-  # 当前模型不大，单卡吞吐优先把训练 batch 提高到 32。
-  batch_size: 32
+  epochs: 5
+  # 当前模型不大，单卡吞吐优先把训练 batch 提高到 1024。
+  batch_size: 1024
   learning_rate: 1.0e-5
   weight_decay: 0.0
   grad_clip_norm: 1.0
   grad_accum_steps: 1
-  log_interval: 20
+  log_interval: 500
   eval_every_epochs: 1
   # 每条目标光谱生成几个候选结构。当前先默认 1，保证主流程稳定。
   num_samples_per_target: 1
@@ -74,12 +74,14 @@ training:
   normalize_logprob_by_length: true
   save_best: true
   save_final: true
+  # 训练结束后由主进程根据按 epoch 汇总的 CSV 自动绘制曲线总览。
+  save_epoch_plots: true
 
 evaluation:
   # 验证默认不开绘图和样本落盘，因而可以把无梯度评测 batch 适度调大；
   # 若显存不足，再把这两项回调到 64。
-  batch_size: 128
-  scoring_batch_size: 128
+  batch_size: 1024
+  scoring_batch_size: 1024
   save_samples: false
   # SFT 训练过程中的验证优先看数值指标，不默认保存逐样本图。
   save_plots: false
@@ -94,7 +96,7 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   material_aliases: {}
-  batch_size: 256
+  batch_size: 1024
   # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
   fixed_max_layers: 20
@@ -109,7 +111,7 @@ losses:
   spectrum_metric: rt_rmse
   invalid_structure_penalty: 1.0
   nonphysical_spectrum_penalty: 1.0
-  physical_tolerance: 0.01
+  physical_tolerance: 0.001
 
 logging:
   console_log: true

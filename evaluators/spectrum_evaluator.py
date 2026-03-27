@@ -14,7 +14,6 @@ from tqdm.auto import tqdm
 from datasets import build_distributed_sampler, optogpt_batch_collator
 from losses import evaluate_generated_structures, masked_mean_negative_logprob
 from models.optogpt import build_decode_config, generate_structures_for_targets, sequence_logprobs_multi_target_batch_tensor
-from physics.spectrum import split_rt_spectrum
 from utils.dist import DistributedContext, barrier
 from utils.logging import append_jsonl, write_summary_csv
 from utils.plotting import save_eval_distribution_summary, save_spectrum_comparison_plot
@@ -142,22 +141,6 @@ class SpectrumEvaluator:
         payload.update(metrics)
         progress.set_postfix(payload, refresh=False)
 
-    def _batch_rt_rmse(
-        self,
-        predicted_spectra: np.ndarray,
-        target_spectra: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """批量计算每条样本的 R-RMSE 和 T-RMSE。"""
-
-        half = predicted_spectra.shape[-1] // 2
-        pred_r = predicted_spectra[:, :half]
-        pred_t = predicted_spectra[:, half:]
-        target_r = target_spectra[:, :half]
-        target_t = target_spectra[:, half:]
-        r_rmse = np.sqrt(np.mean(np.square(pred_r - target_r), axis=1))
-        t_rmse = np.sqrt(np.mean(np.square(pred_t - target_t), axis=1))
-        return r_rmse.astype(np.float32, copy=False), t_rmse.astype(np.float32, copy=False)
-
     def _cached_token_id_groups(
         self,
         sample_indices: Sequence[int],
@@ -277,25 +260,18 @@ class SpectrumEvaluator:
                 sequence_losses = sequence_losses_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
                 spectrum_losses = spectrum_aux["spectrum_losses"]
                 ok_mask = spectrum_aux["ok_mask"]
+                r_rmse = spectrum_aux["r_rmse"]
+                t_rmse = spectrum_aux["t_rmse"]
                 generated_lengths = np.asarray([len(item.structure_tokens) for item in generated], dtype=np.int64)
                 metric_accumulator.update_batch(
                     sequence_losses=sequence_losses,
                     spectrum_losses=spectrum_losses,
                     ok_mask=ok_mask,
+                    r_rmse=r_rmse,
+                    t_rmse=t_rmse,
                 )
 
                 if distribution_accumulator is not None:
-                    target_spectra_np = np.asarray(spectra.detach().cpu().numpy(), dtype=np.float32)
-                    r_rmse = np.full((len(spectrum_losses),), self.rt_rmse_max, dtype=np.float32)
-                    t_rmse = np.full((len(spectrum_losses),), self.rt_rmse_max, dtype=np.float32)
-                    predicted_spectra = spectrum_aux.get("predicted_spectra")
-                    has_predicted_spectrum = spectrum_aux.get("has_predicted_spectrum")
-                    if predicted_spectra is not None and has_predicted_spectrum is not None and bool(has_predicted_spectrum.any()):
-                        valid_mask = np.asarray(has_predicted_spectrum, dtype=np.bool_)
-                        r_values, t_values = self._batch_rt_rmse(predicted_spectra[valid_mask], target_spectra_np[valid_mask])
-                        r_rmse[valid_mask] = r_values
-                        t_rmse[valid_mask] = t_values
-
                     distribution_accumulator.update_batch(
                         r_rmse=r_rmse,
                         t_rmse=t_rmse,
@@ -323,6 +299,8 @@ class SpectrumEvaluator:
                                     "generated": asdict(generated_item),
                                     "sequence_loss": float(sequence_loss),
                                     "spectrum_loss": float(spectrum_result["spectrum_loss"]),
+                                    "r_rmse": float(spectrum_result.get("r_rmse", spectrum_result["spectrum_loss"])),
+                                    "t_rmse": float(spectrum_result.get("t_rmse", spectrum_result["spectrum_loss"])),
                                     "status": str(spectrum_result["status"]),
                                 },
                             )
@@ -345,6 +323,8 @@ class SpectrumEvaluator:
                     progress.set_postfix(
                         seq=f"{metric_accumulator.sequence_loss_sum / max(metric_accumulator.sample_count, 1):.4f}",
                         spec=f"{metric_accumulator.spectrum_loss_sum / max(metric_accumulator.sample_count, 1):.4f}",
+                        r=f"{metric_accumulator.r_rmse_sum / max(metric_accumulator.sample_count, 1):.4f}",
+                        t=f"{metric_accumulator.t_rmse_sum / max(metric_accumulator.sample_count, 1):.4f}",
                         samples=int(metric_accumulator.sample_count),
                     )
 
@@ -381,6 +361,8 @@ class SpectrumEvaluator:
         self._log(
             f"[eval:{split_name}] samples={summary_row['sample_count']} "
             f"seq={summary_row['mean_sequence_loss']:.6f} "
-            f"spec={summary_row['mean_spectrum_loss']:.6f}"
+            f"spec={summary_row['mean_spectrum_loss']:.6f} "
+            f"r={summary_row['mean_r_rmse']:.6f} "
+            f"t={summary_row['mean_t_rmse']:.6f}"
         )
         return summary_row

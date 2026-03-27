@@ -17,6 +17,7 @@ from losses import evaluate_generated_structures
 from models.optogpt import build_decode_config, export_optogpt_checkpoint, generate_structures_for_targets, sequence_logprobs_multi_target_batch_tensor
 from utils.dist import DistributedContext, barrier, reduce_tensor
 from utils.logging import write_summary_csv
+from utils.plotting import save_sft_epoch_summary_plot
 
 
 class SpectralSFTTrainer:
@@ -55,6 +56,7 @@ class SpectralSFTTrainer:
         self.prefetch_factor = int(data_cfg.get("prefetch_factor", 2))
         self.save_best = bool(training_cfg.get("save_best", True))
         self.save_final = bool(training_cfg.get("save_final", True))
+        self.save_epoch_plots = bool(training_cfg.get("save_epoch_plots", True))
         self.console_log = bool(logging_cfg.get("console_log", True))
         self.show_progress_bar = bool(logging_cfg.get("show_progress_bar", True))
 
@@ -87,8 +89,10 @@ class SpectralSFTTrainer:
 
         self.metrics_dir = self.run_dir / "metrics"
         self.checkpoints_dir = self.run_dir / "checkpoints"
+        self.plots_dir = self.run_dir / "plots"
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        self.plots_dir.mkdir(parents=True, exist_ok=True)
 
         self.evaluator = SpectrumEvaluator(
             model=self.model,
@@ -106,8 +110,17 @@ class SpectralSFTTrainer:
         reduced = reduce_tensor(tensor, op="mean")
         return float(reduced.item())
 
+    def _reduce_sum(self, value: float) -> float:
+        tensor = torch.tensor([float(value)], dtype=torch.float64, device=self.model.device)
+        reduced = reduce_tensor(tensor, op="sum")
+        return float(reduced.item())
+
     def _reduce_mean_tensor(self, value: torch.Tensor) -> float:
         reduced = reduce_tensor(value.detach().to(dtype=torch.float64).reshape(1), op="mean")
+        return float(reduced.item())
+
+    def _reduce_sum_tensor(self, value: torch.Tensor) -> float:
+        reduced = reduce_tensor(value.detach().to(dtype=torch.float64).reshape(1), op="sum")
         return float(reduced.item())
 
     def _make_progress(self, iterable, total: int, desc: str):
@@ -139,7 +152,7 @@ class SpectralSFTTrainer:
         sample_indices: Sequence[int],
         sync_gradients: bool,
         progress=None,
-    ) -> tuple[torch.Tensor, torch.Tensor, float]:
+    ) -> dict[str, float | int | torch.Tensor]:
         """执行一个训练 batch。
 
         这里采用的是“光谱风险最小化”式目标：
@@ -193,20 +206,39 @@ class SpectralSFTTrainer:
             )
             if logprobs.numel() == 0:
                 zero = torch.zeros((), dtype=torch.float32, device=self.model.device)
-                return zero, zero, 0.0
+                return {
+                    "sample_count": 0,
+                    "objective_mean": zero,
+                    "objective_sum": zero,
+                    "spectrum_mean": zero,
+                    "spectrum_sum": zero,
+                    "sequence_mean": zero,
+                    "sequence_sum": zero,
+                    "valid_ratio": 0.0,
+                    "valid_count": 0.0,
+                    "r_mean": 0.0,
+                    "r_sum": 0.0,
+                    "t_mean": 0.0,
+                    "t_sum": 0.0,
+                }
 
             token_mask_float = token_mask.to(dtype=logprobs.dtype)
             lengths = token_mask.sum(dim=-1).clamp_min(1).to(dtype=logprobs.dtype)
             sequence_logprob = (logprobs * token_mask_float).sum(dim=-1)
             if self.normalize_logprob_by_length:
                 sequence_logprob = sequence_logprob / lengths
+            sequence_loss_tensor = -sequence_logprob.detach()
 
             spectrum_loss_tensor = torch.as_tensor(
                 spectrum_aux["spectrum_losses"],
                 dtype=logprobs.dtype,
                 device=self.model.device,
             )
-            valid_ratio = float(np.mean(spectrum_aux["ok_mask"].astype(np.float32)))
+            batch_sample_count = int(spectrum_loss_tensor.numel())
+            valid_count = float(np.sum(spectrum_aux["ok_mask"].astype(np.float32)))
+            valid_ratio = valid_count / float(batch_sample_count) if batch_sample_count > 0 else 0.0
+            r_rmse = np.asarray(spectrum_aux["r_rmse"], dtype=np.float32)
+            t_rmse = np.asarray(spectrum_aux["t_rmse"], dtype=np.float32)
 
             weight_tensor = spectrum_loss_tensor
             if self.center_spectrum_loss and spectrum_loss_tensor.numel() > 1:
@@ -220,11 +252,22 @@ class SpectralSFTTrainer:
             self._update_progress_stage(progress, "backward")
             objective.backward()
 
-        return (
-            objective.detach(),
-            spectrum_loss_tensor.mean().detach(),
-            float(valid_ratio),
-        )
+        objective_detached = objective.detach()
+        return {
+            "sample_count": batch_sample_count,
+            "objective_mean": objective_detached,
+            "objective_sum": objective_detached * float(batch_sample_count),
+            "spectrum_mean": spectrum_loss_tensor.mean().detach(),
+            "spectrum_sum": spectrum_loss_tensor.sum().detach(),
+            "sequence_mean": sequence_loss_tensor.mean(),
+            "sequence_sum": sequence_loss_tensor.sum(),
+            "valid_ratio": float(valid_ratio),
+            "valid_count": float(valid_count),
+            "r_mean": float(r_rmse.mean()) if r_rmse.size > 0 else 0.0,
+            "r_sum": float(r_rmse.sum()),
+            "t_mean": float(t_rmse.mean()) if t_rmse.size > 0 else 0.0,
+            "t_sum": float(t_rmse.sum()),
+        }
 
     def train(self, train_dataset, val_dataset=None) -> list[dict]:
         sampler = build_distributed_sampler(
@@ -259,8 +302,11 @@ class SpectralSFTTrainer:
 
             epoch_objective_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
             epoch_spectrum_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
-            epoch_valid_ratio_sum = 0.0
-            epoch_batch_count = 0
+            epoch_sequence_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
+            epoch_r_rmse_sum = 0.0
+            epoch_t_rmse_sum = 0.0
+            epoch_valid_count = 0.0
+            epoch_sample_count = 0
             accum_counter = 0
 
             progress = self._make_progress(
@@ -271,16 +317,19 @@ class SpectralSFTTrainer:
             for batch in progress:
                 global_step += 1
                 accum_counter += 1
-                batch_objective_tensor, batch_spectrum_loss_tensor, batch_valid_ratio = self._train_batch(
+                batch_stats = self._train_batch(
                     spectra=batch["spectra"],
                     sample_indices=batch["sample_indices"].tolist(),
                     sync_gradients=(accum_counter >= self.grad_accum_steps),
                     progress=progress,
                 )
-                epoch_objective_sum = epoch_objective_sum + batch_objective_tensor
-                epoch_spectrum_sum = epoch_spectrum_sum + batch_spectrum_loss_tensor
-                epoch_valid_ratio_sum += float(batch_valid_ratio)
-                epoch_batch_count += 1
+                epoch_objective_sum = epoch_objective_sum + batch_stats["objective_sum"]
+                epoch_spectrum_sum = epoch_spectrum_sum + batch_stats["spectrum_sum"]
+                epoch_sequence_sum = epoch_sequence_sum + batch_stats["sequence_sum"]
+                epoch_r_rmse_sum += float(batch_stats["r_sum"])
+                epoch_t_rmse_sum += float(batch_stats["t_sum"])
+                epoch_valid_count += float(batch_stats["valid_count"])
+                epoch_sample_count += int(batch_stats["sample_count"])
 
                 if accum_counter >= self.grad_accum_steps:
                     torch.nn.utils.clip_grad_norm_(self.model.trainable_parameters(), self.grad_clip_norm)
@@ -289,19 +338,28 @@ class SpectralSFTTrainer:
                     accum_counter = 0
 
                 if global_step == 1 or global_step % self.log_interval == 0:
-                    reduced_objective = self._reduce_mean_tensor(batch_objective_tensor)
-                    reduced_spectrum = self._reduce_mean_tensor(batch_spectrum_loss_tensor)
-                    reduced_valid = self._reduce_mean(batch_valid_ratio)
+                    reduced_objective = self._reduce_mean_tensor(batch_stats["objective_mean"])
+                    reduced_spectrum = self._reduce_mean_tensor(batch_stats["spectrum_mean"])
+                    reduced_sequence = self._reduce_mean_tensor(batch_stats["sequence_mean"])
+                    reduced_r = self._reduce_mean(float(batch_stats["r_mean"]))
+                    reduced_t = self._reduce_mean(float(batch_stats["t_mean"]))
+                    reduced_valid = self._reduce_mean(float(batch_stats["valid_ratio"]))
                     if hasattr(progress, "set_postfix"):
                         progress.set_postfix(
                             objective=f"{reduced_objective:.4f}",
                             spectrum=f"{reduced_spectrum:.4f}",
+                            seq=f"{reduced_sequence:.4f}",
+                            r=f"{reduced_r:.4f}",
+                            t=f"{reduced_t:.4f}",
                             valid=f"{reduced_valid:.3f}",
                         )
                     self._log(
                         f"[train] epoch={epoch}/{self.epochs} step={global_step} "
                         f"objective={reduced_objective:.6f} "
                         f"spectrum={reduced_spectrum:.6f} "
+                        f"sequence={reduced_sequence:.6f} "
+                        f"r={reduced_r:.6f} "
+                        f"t={reduced_t:.6f} "
                         f"valid={reduced_valid:.4f}"
                     )
 
@@ -313,20 +371,34 @@ class SpectralSFTTrainer:
                 self.optimizer.step()
                 self.optimizer.zero_grad(set_to_none=True)
 
-            if epoch_batch_count > 0:
-                mean_objective = self._reduce_mean_tensor(epoch_objective_sum / float(epoch_batch_count))
-                mean_spectrum = self._reduce_mean_tensor(epoch_spectrum_sum / float(epoch_batch_count))
-                mean_valid = self._reduce_mean(epoch_valid_ratio_sum / float(epoch_batch_count))
+            if epoch_sample_count > 0:
+                total_sample_count = self._reduce_sum(float(epoch_sample_count))
+                mean_objective = self._reduce_sum_tensor(epoch_objective_sum) / total_sample_count
+                mean_spectrum = self._reduce_sum_tensor(epoch_spectrum_sum) / total_sample_count
+                mean_sequence = self._reduce_sum_tensor(epoch_sequence_sum) / total_sample_count
+                mean_r_rmse = self._reduce_sum(epoch_r_rmse_sum) / total_sample_count
+                mean_t_rmse = self._reduce_sum(epoch_t_rmse_sum) / total_sample_count
+                mean_valid = self._reduce_sum(epoch_valid_count) / total_sample_count
             else:
                 mean_objective = 0.0
                 mean_spectrum = 0.0
+                mean_sequence = 0.0
+                mean_r_rmse = 0.0
+                mean_t_rmse = 0.0
                 mean_valid = 0.0
             epoch_row = {
                 "epoch": int(epoch),
                 "global_step": int(global_step),
                 "mean_objective": float(mean_objective),
                 "mean_train_spectrum_loss": float(mean_spectrum),
+                "mean_train_sequence_loss": float(mean_sequence),
+                "mean_train_r_rmse": float(mean_r_rmse),
+                "mean_train_t_rmse": float(mean_t_rmse),
                 "mean_train_valid_ratio": float(mean_valid),
+                "val_sequence_loss": float("nan"),
+                "val_spectrum_loss": float("nan"),
+                "val_r_rmse": float("nan"),
+                "val_t_rmse": float("nan"),
             }
 
             if val_dataset is not None and epoch % self.eval_every_epochs == 0:
@@ -335,6 +407,8 @@ class SpectralSFTTrainer:
                 if self.dist_ctx.is_main and val_row is not None:
                     epoch_row["val_sequence_loss"] = float(val_row["mean_sequence_loss"])
                     epoch_row["val_spectrum_loss"] = float(val_row["mean_spectrum_loss"])
+                    epoch_row["val_r_rmse"] = float(val_row["mean_r_rmse"])
+                    epoch_row["val_t_rmse"] = float(val_row["mean_t_rmse"])
                     if self.save_best and float(val_row["mean_spectrum_loss"]) < best_val_spectrum:
                         best_val_spectrum = float(val_row["mean_spectrum_loss"])
                         export_optogpt_checkpoint(
@@ -361,5 +435,14 @@ class SpectralSFTTrainer:
                     "global_step": int(global_step),
                 },
             )
+        barrier()
+        if self.save_epoch_plots and self.dist_ctx.is_main:
+            try:
+                save_sft_epoch_summary_plot(
+                    path=self.plots_dir / "epoch_summary.png",
+                    rows=train_rows,
+                )
+            except ImportError as exc:
+                self._log(f"[plot] skip epoch summary plot because {exc}")
         barrier()
         return train_rows

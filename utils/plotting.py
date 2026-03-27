@@ -251,3 +251,66 @@ def save_eval_distribution_summary(
     figure.tight_layout()
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
+
+
+def save_sft_epoch_summary_plot(
+    path: str | Path,
+    rows: Sequence[Mapping],
+) -> None:
+    """保存 spectral SFT 的 epoch 级训练/验证曲线总览。"""
+
+    if not rows:
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError("matplotlib is required to save spectral SFT epoch plots.") from exc
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    epochs = np.asarray([float(row["epoch"]) for row in rows], dtype=np.float32)
+
+    def _series(key: str) -> np.ndarray:
+        values = []
+        for row in rows:
+            value = row.get(key, float("nan"))
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                values.append(float("nan"))
+        return np.asarray(values, dtype=np.float32)
+
+    train_r = _series("mean_train_r_rmse")
+    train_t = _series("mean_train_t_rmse")
+    train_seq = _series("mean_train_sequence_loss")
+    train_spec = _series("mean_train_spectrum_loss")
+    val_r = _series("val_r_rmse")
+    val_t = _series("val_t_rmse")
+    val_seq = _series("val_sequence_loss")
+    val_spec = _series("val_spectrum_loss")
+
+    figure, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
+    figure.suptitle("Spectral SFT Epoch Summary")
+
+    curve_specs = [
+        (axes[0, 0], "R-RMSE vs Epoch", "R-RMSE", train_r, val_r),
+        (axes[0, 1], "T-RMSE vs Epoch", "T-RMSE", train_t, val_t),
+        (axes[1, 0], "Sequence Loss vs Epoch", "Sequence Loss", train_seq, val_seq),
+        (axes[1, 1], "Spectrum Loss vs Epoch", "Spectrum Loss", train_spec, val_spec),
+    ]
+
+    for axis, title, y_label, train_values, val_values in curve_specs:
+        axis.plot(epochs, train_values, marker="o", linewidth=2.0, color="#2a6f97", label="train")
+        if np.isfinite(val_values).any():
+            axis.plot(epochs, val_values, marker="s", linewidth=2.0, color="#bc4749", label="val")
+        axis.set_title(title)
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel(y_label)
+        axis.grid(alpha=0.25)
+        axis.legend(loc="best")
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=180)
+    plt.close(figure)
