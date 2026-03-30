@@ -1,33 +1,54 @@
 # 本次修改摘要
 
 ## 需求
-- 修复多卡 spectral SFT 在训练早期 TMM 阶段崩溃的问题。
-- 当前报错由 `R/T` 统计新增逻辑触发：单段 `71` 点反射/透射曲线被误传给只接受拼接 `[R..., T...]` 光谱的误差接口。
+- 阅读 `analysis_optogpt.ipynb` 中的 t-SNE 代码。
+- 新增独立 Python 入口，用于对比 SFT 前后两个 OptoGPT checkpoint 的隐藏表示 t-SNE。
+
+## notebook 中 t-SNE 的原始逻辑
+- `analysis_optogpt.ipynb`
+  - `cell 34`
+    - `hidedn_spec = model.fc(hidden_index.to(DEVICE))`
+    - 从模型 `fc` 提取光谱隐藏表示
+    - 根据 checkpoint 里的 `struc_word_dict` 构造 `mat_index`
+  - `cell 35`
+    - 把 `hidedn_struc` 与 `hidedn_spec` 拼接后做 `MinMaxScaler + TSNE`
+  - `cell 36`
+    - 按材料类别和光谱点分别绘制散点图
 
 ## 实际修改
-- `losses/spectrum_loss.py`
-  - 修复 `r_rmse / t_rmse` 的计算方式。
-  - 当前在 `evaluate_generated_structures(...)` 内，针对单段 `reflection`、`transmission` 曲线直接计算 RMSE：
-    - `r_error = sqrt(mean((reflection - target_r)^2))`
-    - `t_error = sqrt(mean((transmission - target_t)^2))`
-  - 不再把单段 `71` 点曲线传给 `spectrum_error(..., metric='r_rmse/t_rmse')`，避免触发拼接光谱长度检查。
+- `runners/run_tsne_compare.py`
+  - 新增独立 runner：
+    - 同时加载 before / after 两个 checkpoint
+    - 提取两者的结构 token embedding
+    - 提取两者对同一批光谱的 `fc` 隐藏表示
+    - 把 before/after 的结构与光谱隐藏表示拼接后做一次共享 t-SNE
+    - 输出共享坐标系下的 before/after 双面板对比图
+  - 输出：
+    - `tsne_compare.png`
+    - `tsne_points.npz`
+    - `metadata.json`
+  - 兼容 `.npy/.pkl` 光谱文件
+  - 保持 notebook 里的材料顺序、颜色和图例语义
+  - 比 notebook 额外改进：
+    - before/after 共用一次 t-SNE 拟合，避免单独拟合导致两张图坐标系不可比
+- 修复：
+  - 同时处理了 `numpy 2.x` 下 `ndarray.ptp()` 被移除的问题，改为 `np.ptp(...)`
 
-## 原因
-- `physics/spectrum.py::spectrum_error(...)` 的 `r_rmse / t_rmse` 分支仍按拼接光谱 `[R..., T...]` 解析。
-- 训练中新增的 epoch 汇总在 `losses/spectrum_loss.py` 里传入的是单段 `R` 或 `T` 曲线，因此在 Linux 多卡训练时会报：
-  - `ValueError: 光谱长度必须为偶数，当前长度为 71`
-
-## 影响
-- 不影响原有总光谱损失 `rt_rmse` 计算。
-- 只修正新增的 `R-RMSE / T-RMSE` 统计逻辑。
-- 同步后可直接继续重跑训练，无需改 YAML。
+## 运行示例
+```bash
+python runners/run_tsne_compare.py ^
+  --before-checkpoint model/optogpt.pt ^
+  --after-checkpoint outputs/sft/<run>/checkpoints/best.pt ^
+  --spectrum-path dataset/Spectrum_test.npy ^
+  --max-spectra 1000
+```
 
 ## 验证
-- `D:\\anaconda\\envs\\oneday\\python.exe -m compileall losses evaluators trainers`
-- `@' ... split_rt_spectrum + 单段 RMSE smoke test ... '@ | D:\\anaconda\\envs\\oneday\\python.exe -`
+- `D:\\anaconda\\envs\\oneday\\python.exe runners/run_tsne_compare.py --help`
+- `D:\\anaconda\\envs\\oneday\\python.exe runners/run_tsne_compare.py --before-checkpoint model/optogpt.pt --after-checkpoint model/optogpt.pt --spectrum-path dataset/Spectrum_test.npy --max-spectra 8 --batch-size 8 --n-iter 250 --output-dir outputs/_debug --name tsne_smoke --device auto`
 
 结果：通过
 
 ## Git
-- branch: `fix/sft-rt-rmse-crash`
-- commit: `git commit -m "fix: handle single-channel rt rmse in spectral sft"`
+- branch: `feat/tsne-compare-runner`
+- commit: `git commit -m "feat: add tsne comparison runner for sft checkpoints"`
