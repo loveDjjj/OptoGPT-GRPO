@@ -5,9 +5,18 @@ from __future__ import annotations
 from typing import Any, List, Mapping, Sequence
 
 import numpy as np
+import torch
 
-from physics import calculate_optical_properties_batch
-from physics.spectrum import flatten_rt, is_physical_spectrum, spectrum_error, split_rt_spectrum
+from physics import calculate_optical_properties_batch, calculate_optical_properties_batch_torch
+from physics.spectrum import (
+    flatten_rt,
+    is_physical_spectrum,
+    physical_spectrum_mask_torch,
+    spectrum_error,
+    spectrum_error_torch,
+    split_rt_spectrum,
+    split_rt_spectrum_torch,
+)
 from physics.structure import (
     bucket_indices_by_layer_count,
     pad_tmm_configs_to_fixed_layers,
@@ -25,6 +34,35 @@ def _normalize_targets(target_spectra: Sequence[Sequence[float]] | Sequence[floa
     if arr.ndim == 2 and arr.shape[0] == count:
         return [arr[i] for i in range(count)]
     raise ValueError("target_spectra 的形状必须是 (142,) 或 (batch, 142)。")
+
+
+def _normalize_targets_torch(
+    target_spectra: Sequence[Sequence[float]] | Sequence[float],
+    count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """把单条目标光谱或批量目标光谱统一成 torch 张量。"""
+
+    if torch.is_tensor(target_spectra):
+        target_tensor = target_spectra.detach().to(device=device, dtype=torch.float32)
+        if target_tensor.dim() == 1:
+            return target_tensor.view(1, -1).repeat(count, 1)
+        if target_tensor.dim() == 2 and target_tensor.size(0) == count:
+            return target_tensor
+        raise ValueError("target_spectra 的形状必须是 (142,) 或 (batch, 142)。")
+
+    arr = np.asarray(target_spectra, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = np.repeat(arr.reshape(1, -1), count, axis=0)
+    elif arr.ndim != 2 or arr.shape[0] != count:
+        raise ValueError("target_spectra 的形状必须是 (142,) 或 (batch, 142)。")
+    return torch.as_tensor(arr, dtype=torch.float32, device=device)
+
+
+def _resolve_torch_device(device: str | torch.device | None) -> torch.device:
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return device if isinstance(device, torch.device) else torch.device(device)
 
 
 def _format_return_payload(
@@ -63,6 +101,8 @@ def evaluate_generated_structures(
     pad_material: str = "Air",
     batch_size: int | None = None,
     tmm_debug: bool = False,
+    device: str | torch.device | None = None,
+    complex_dtype: str | torch.dtype = torch.complex128,
     return_aux_arrays: bool = False,
     return_item_results: bool = True,
 ) -> List[dict] | dict[str, np.ndarray] | tuple[List[dict], dict[str, np.ndarray]]:
@@ -210,6 +250,8 @@ def evaluate_generated_structures(
                 num_points=num_points,
                 incident_angle=incident_angle,
                 polarization=polarization,
+                device=device,
+                complex_dtype=complex_dtype,
                 plot_results=False,
                 debug=tmm_debug,
             )
@@ -305,3 +347,192 @@ def evaluate_generated_structures(
         return_item_results=return_item_results,
         return_aux_arrays=return_aux_arrays,
     )
+
+
+def evaluate_generated_structures_torch(
+    structure_token_groups: Sequence[Sequence[str]],
+    target_spectra: Sequence[Sequence[float]] | Sequence[float],
+    wavelength_range_um: Sequence[float] = (0.4, 1.1),
+    num_points: int = 71,
+    incident_angle: float = 0.0,
+    polarization: int = 0,
+    metric: str = "rt_rmse",
+    invalid_structure_penalty: float = 1.0,
+    nonphysical_spectrum_penalty: float | None = None,
+    physical_tolerance: float = 0.01,
+    database_path: str = "data/materials",
+    material_aliases: Mapping[str, str] | None = None,
+    pad_to_max_layers: bool = False,
+    bucket_by_layer_count: bool = False,
+    fixed_max_layers: int | None = None,
+    pad_material: str = "Air",
+    batch_size: int | None = None,
+    tmm_debug: bool = False,
+    device: str | torch.device | None = None,
+    complex_dtype: str | torch.dtype = torch.complex64,
+) -> dict[str, torch.Tensor]:
+    """训练用 torch-only 快路：在 GPU 上直接计算结构对应的光谱误差。"""
+
+    resolved_device = _resolve_torch_device(device)
+    sample_count = len(structure_token_groups)
+    nonphysical_penalty = float(
+        invalid_structure_penalty if nonphysical_spectrum_penalty is None else nonphysical_spectrum_penalty
+    )
+
+    spectrum_losses = torch.full((sample_count,), float(invalid_structure_penalty), dtype=torch.float32, device=resolved_device)
+    ok_mask = torch.zeros((sample_count,), dtype=torch.bool, device=resolved_device)
+    r_rmse = torch.full((sample_count,), float(invalid_structure_penalty), dtype=torch.float32, device=resolved_device)
+    t_rmse = torch.full((sample_count,), float(invalid_structure_penalty), dtype=torch.float32, device=resolved_device)
+    if sample_count == 0:
+        return {
+            "spectrum_losses": spectrum_losses,
+            "ok_mask": ok_mask,
+            "r_rmse": r_rmse,
+            "t_rmse": t_rmse,
+        }
+
+    target_tensor = _normalize_targets_torch(target_spectra, sample_count, resolved_device)
+
+    valid_items = []
+    for idx, tokens in enumerate(structure_token_groups):
+        try:
+            config = tokens_to_tmm_config(
+                tokens=tokens,
+                database_path=database_path,
+                material_aliases=material_aliases,
+            )
+        except Exception:
+            continue
+
+        valid_items.append(
+            {
+                "index": idx,
+                "structure_tokens": list(structure_token_groups[idx]),
+                "layer_count": len(config["materials"]),
+                "config": config,
+            }
+        )
+
+    if not valid_items:
+        return {
+            "spectrum_losses": spectrum_losses,
+            "ok_mask": ok_mask,
+            "r_rmse": r_rmse,
+            "t_rmse": t_rmse,
+        }
+
+    grouped_eval_items: List[List[dict]] = []
+    if fixed_max_layers is not None:
+        fixed_max_layers = int(fixed_max_layers)
+        padded_inputs = []
+        for item in valid_items:
+            if item["layer_count"] > fixed_max_layers:
+                continue
+            padded_inputs.append(item)
+
+        if padded_inputs:
+            padded_configs = pad_tmm_configs_to_fixed_layers(
+                [item["config"] for item in padded_inputs],
+                target_layers=fixed_max_layers,
+                pad_material=pad_material,
+            )
+            grouped_eval_items.append(
+                [
+                    dict(item, padded_layer_count=fixed_max_layers, config=config)
+                    for item, config in zip(padded_inputs, padded_configs)
+                ]
+            )
+    elif bucket_by_layer_count:
+        index_buckets = bucket_indices_by_layer_count([item["structure_tokens"] for item in valid_items])
+        for _, bucket_indices in sorted(index_buckets.items(), key=lambda pair: pair[0]):
+            bucket_items = [valid_items[idx] for idx in bucket_indices]
+            if pad_to_max_layers:
+                padded_configs, padded_layers = pad_tmm_configs_to_max_layers(
+                    [item["config"] for item in bucket_items],
+                    pad_material=pad_material,
+                )
+                bucket_items = [
+                    dict(item, padded_layer_count=padded_layers, config=config)
+                    for item, config in zip(bucket_items, padded_configs)
+                ]
+            grouped_eval_items.append(bucket_items)
+    else:
+        eval_items = list(valid_items)
+        if pad_to_max_layers:
+            padded_configs, padded_layers = pad_tmm_configs_to_max_layers(
+                [item["config"] for item in valid_items],
+                pad_material=pad_material,
+            )
+            eval_items = [
+                dict(item, padded_layer_count=padded_layers, config=config)
+                for item, config in zip(valid_items, padded_configs)
+            ]
+        grouped_eval_items.append(eval_items)
+
+    total_eval_count = sum(len(group) for group in grouped_eval_items)
+    effective_batch_size = int(batch_size or total_eval_count)
+    effective_batch_size = max(1, effective_batch_size)
+    nonphysical_fill = float(nonphysical_penalty)
+
+    for eval_items in grouped_eval_items:
+        for start in range(0, len(eval_items), effective_batch_size):
+            batch_items = eval_items[start : start + effective_batch_size]
+            batch_configs = [item["config"] for item in batch_items]
+            wavelengths_t, reflections_t, transmissions_t = calculate_optical_properties_batch_torch(
+                structure_configs=batch_configs,
+                wavelength_range=tuple(wavelength_range_um),
+                num_points=num_points,
+                incident_angle=incident_angle,
+                polarization=polarization,
+                device=resolved_device,
+                complex_dtype=complex_dtype,
+                keep_grad=False,
+                debug=tmm_debug,
+            )
+            if wavelengths_t is None:
+                continue
+
+            index_tensor = torch.as_tensor(
+                [item["index"] for item in batch_items],
+                dtype=torch.long,
+                device=resolved_device,
+            )
+            batch_target = target_tensor.index_select(0, index_tensor)
+            predicted_spectrum = torch.cat([reflections_t, transmissions_t], dim=-1).to(dtype=torch.float32)
+            target_r, target_t = split_rt_spectrum_torch(batch_target)
+            batch_r_rmse = torch.sqrt(torch.mean((reflections_t.to(dtype=torch.float32) - target_r).square(), dim=-1))
+            batch_t_rmse = torch.sqrt(torch.mean((transmissions_t.to(dtype=torch.float32) - target_t).square(), dim=-1))
+            batch_spectrum_loss = spectrum_error_torch(predicted_spectrum, batch_target, metric=metric).to(dtype=torch.float32)
+            physical_mask = physical_spectrum_mask_torch(
+                reflections_t.to(dtype=torch.float32),
+                transmissions_t.to(dtype=torch.float32),
+                tolerance=physical_tolerance,
+            )
+
+            batch_spectrum_loss = torch.where(
+                physical_mask,
+                batch_spectrum_loss,
+                torch.full_like(batch_spectrum_loss, nonphysical_fill),
+            )
+            batch_r_rmse = torch.where(
+                physical_mask,
+                batch_r_rmse,
+                torch.full_like(batch_r_rmse, nonphysical_fill),
+            )
+            batch_t_rmse = torch.where(
+                physical_mask,
+                batch_t_rmse,
+                torch.full_like(batch_t_rmse, nonphysical_fill),
+            )
+
+            spectrum_losses.index_copy_(0, index_tensor, batch_spectrum_loss)
+            r_rmse.index_copy_(0, index_tensor, batch_r_rmse)
+            t_rmse.index_copy_(0, index_tensor, batch_t_rmse)
+            ok_mask[index_tensor] = physical_mask
+
+    return {
+        "spectrum_losses": spectrum_losses,
+        "ok_mask": ok_mask,
+        "r_rmse": r_rmse,
+        "t_rmse": t_rmse,
+    }

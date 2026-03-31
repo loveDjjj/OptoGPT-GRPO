@@ -75,7 +75,7 @@ training:
   # rollout 记录的 old logprobs 与 update 重算的 current logprobs 共用同一 policy 定义。
   # 这里的 `eval` 只表示关闭 dropout，不影响 scoring 阶段的 autograd 与参数更新。
   policy_forward_mode: eval
-  # 是否按序列长度归一化 sequence logprob；打开后更不容易偏向短序列。
+  # 只影响日志里的 sequence loss 统计；GRPO ratio 始终使用未归一化的序列 logprob 求和。
   normalize_logprob_by_length: true
   # current logprob 重算默认直接覆盖整个 B*K rollout 样本批次，提高 GPU 并行率。
   scoring_batch_size: 4096
@@ -108,6 +108,8 @@ tmm:
   bucket_by_layer_count: false
   pad_material: Air
   debug: false
+  # GRPO 训练默认优先跑 complex64，提高 TMM GPU 吞吐；若数值稳定性不足再切回 complex128。
+  complex_dtype: complex64
   # 当前默认直接比较拼接后的 R/T 光谱，不再使用吸收率误差。
   metric: rt_rmse
 

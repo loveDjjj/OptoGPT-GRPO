@@ -215,14 +215,16 @@ def _decode_from_src_batch(
     )
     generated_lengths = torch.zeros((num_samples,), dtype=torch.long, device=model.device)
     terminated_by_eos = torch.zeros((num_samples,), dtype=torch.bool, device=model.device)
-    active_mask = torch.ones(num_samples, dtype=torch.bool, device=model.device)
+    active_indices = torch.arange(num_samples, device=model.device, dtype=torch.long)
     current_len = prompt_len
     step_idx = 0
 
     with torch.inference_mode():
-        while current_len < generation_limit and bool(active_mask.any().item()):
-            trg_mask = _cached_subsequent_mask(current_len, src.data)
-            out = model.model(src, ys[:, :current_len], None, trg_mask)
+        while current_len < generation_limit and int(active_indices.numel()) > 0:
+            active_src = src.index_select(0, active_indices)
+            active_prefix = ys.index_select(0, active_indices)[:, :current_len]
+            trg_mask = _cached_subsequent_mask(current_len, active_src.data)
+            out = model.model(active_src, active_prefix, None, trg_mask)
             raw_log_prob = model.generator(out[:, -1])
             policy_log_prob = policy_log_probs_from_raw_log_probs(raw_log_prob, decode_config)
             sample_prob = policy_log_prob.exp()
@@ -234,18 +236,15 @@ def _decode_from_src_batch(
 
             step_raw_logprob = raw_log_prob.gather(1, next_ids.unsqueeze(-1)).squeeze(-1)
             step_policy_logprob = policy_log_prob.gather(1, next_ids.unsqueeze(-1)).squeeze(-1)
-            next_ids_to_append = torch.where(active_mask, next_ids, torch.full_like(next_ids, pad_id))
-            ys[:, current_len] = next_ids_to_append
-            step_logprobs[:, step_idx] = torch.where(active_mask, step_raw_logprob, torch.zeros_like(step_raw_logprob))
-            step_policy_logprobs[:, step_idx] = torch.where(
-                active_mask,
-                step_policy_logprob,
-                torch.zeros_like(step_policy_logprob),
-            )
-            generated_lengths = generated_lengths + active_mask.to(dtype=torch.long)
-            eos_finished = active_mask & next_ids.eq(eos_id)
-            terminated_by_eos = terminated_by_eos | eos_finished
-            active_mask = active_mask & ~eos_finished
+            ys[active_indices, current_len] = next_ids
+            step_logprobs[active_indices, step_idx] = step_raw_logprob
+            step_policy_logprobs[active_indices, step_idx] = step_policy_logprob
+            generated_lengths[active_indices] = generated_lengths[active_indices] + 1
+
+            eos_finished = next_ids.eq(eos_id)
+            if bool(eos_finished.any().item()):
+                terminated_by_eos[active_indices[eos_finished]] = True
+            active_indices = active_indices[~eos_finished]
             current_len += 1
             step_idx += 1
 

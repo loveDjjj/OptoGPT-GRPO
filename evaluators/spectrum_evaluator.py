@@ -93,6 +93,8 @@ class SpectrumEvaluator:
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
             "batch_size": int(tmm_cfg.get("batch_size", self.batch_size)),
             "tmm_debug": bool(tmm_cfg.get("debug", False)),
+            "device": self.model.device,
+            "complex_dtype": tmm_cfg.get("complex_dtype", "complex64"),
         }
 
         self.samples_dir = self.run_dir / "samples"

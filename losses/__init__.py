@@ -2,10 +2,11 @@
 
 from .grpo_loss import grpo_clipped_surrogate, group_relative_advantages, masked_sequence_logprob
 from .sequence_loss import masked_mean_negative_logprob
-from .spectrum_loss import evaluate_generated_structures
+from .spectrum_loss import evaluate_generated_structures, evaluate_generated_structures_torch
 
 __all__ = [
     "evaluate_generated_structures",
+    "evaluate_generated_structures_torch",
     "grpo_clipped_surrogate",
     "group_relative_advantages",
     "masked_mean_negative_logprob",

@@ -6,14 +6,18 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from datasets import build_distributed_sampler, optogpt_batch_collator
 from evaluators import SpectrumEvaluator
-from losses import evaluate_generated_structures, grpo_clipped_surrogate, group_relative_advantages, masked_sequence_logprob
+from losses import (
+    evaluate_generated_structures_torch,
+    grpo_clipped_surrogate,
+    group_relative_advantages,
+    masked_sequence_logprob,
+)
 from models.optogpt import (
     build_decode_config,
     export_optogpt_checkpoint,
@@ -107,6 +111,8 @@ class GRPOTrainer:
             "pad_material": str(tmm_cfg.get("pad_material", "Air")),
             "batch_size": int(tmm_cfg.get("batch_size", self.scoring_batch_size)),
             "tmm_debug": bool(tmm_cfg.get("debug", False)),
+            "device": self.model.device,
+            "complex_dtype": tmm_cfg.get("complex_dtype", "complex64"),
         }
 
         self.optimizer = torch.optim.AdamW(
@@ -273,19 +279,13 @@ class GRPOTrainer:
                 return self._zero_stats()
 
             self._update_progress_stage(progress, "tmm")
-            spectrum_aux = evaluate_generated_structures(
+            spectrum_aux = evaluate_generated_structures_torch(
                 structure_token_groups=[item.structure_tokens for item in generated],
                 target_spectra=expanded_spectra,
-                return_item_results=False,
-                return_aux_arrays=True,
                 **self.tmm_kwargs,
             )
 
-            spectrum_loss_tensor = torch.as_tensor(
-                spectrum_aux["spectrum_losses"],
-                dtype=old_logprobs.dtype,
-                device=self.model.device,
-            )
+            spectrum_loss_tensor = spectrum_aux["spectrum_losses"].to(dtype=old_logprobs.dtype)
             batch_sample_count = int(spectrum_loss_tensor.numel())
             if batch_sample_count == 0:
                 return self._zero_stats()
@@ -299,10 +299,10 @@ class GRPOTrainer:
                 eps=self.advantage_eps,
             )
 
-            valid_count = float(np.sum(spectrum_aux["ok_mask"].astype(np.float32)))
+            valid_count = float(spectrum_aux["ok_mask"].to(dtype=torch.float32).sum().item())
             valid_ratio = valid_count / float(batch_sample_count) if batch_sample_count > 0 else 0.0
-            r_rmse = np.asarray(spectrum_aux["r_rmse"], dtype=np.float32)
-            t_rmse = np.asarray(spectrum_aux["t_rmse"], dtype=np.float32)
+            r_rmse = spectrum_aux["r_rmse"].to(dtype=torch.float32)
+            t_rmse = spectrum_aux["t_rmse"].to(dtype=torch.float32)
 
             sync_context = nullcontext()
             if not sync_gradients and hasattr(self.model.model, "no_sync"):
@@ -331,12 +331,12 @@ class GRPOTrainer:
                 old_sequence_logprob = masked_sequence_logprob(
                     old_logprobs,
                     old_token_mask,
-                    normalize_by_length=self.normalize_logprob_by_length,
+                    normalize_by_length=False,
                 ).detach()
                 current_sequence_logprob = masked_sequence_logprob(
                     current_logprobs,
                     token_mask,
-                    normalize_by_length=self.normalize_logprob_by_length,
+                    normalize_by_length=False,
                 )
                 grpo_stats = grpo_clipped_surrogate(
                     current_sequence_logprob,
@@ -354,7 +354,12 @@ class GRPOTrainer:
             else:
                 self.model.model.eval()
 
-        sequence_loss_tensor = -current_sequence_logprob.detach()
+        logged_sequence_logprob = masked_sequence_logprob(
+            current_logprobs.detach(),
+            token_mask,
+            normalize_by_length=self.normalize_logprob_by_length,
+        )
+        sequence_loss_tensor = -logged_sequence_logprob
         objective_detached = objective.detach()
         ratio_mean = grpo_stats["ratio"].mean().detach()
         approx_kl_mean = grpo_stats["approx_kl"].mean().detach()
@@ -379,10 +384,10 @@ class GRPOTrainer:
             "clip_fraction_sum": clip_fraction_mean * float(batch_sample_count),
             "valid_ratio": float(valid_ratio),
             "valid_count": float(valid_count),
-            "r_mean": float(r_rmse.mean()) if r_rmse.size > 0 else 0.0,
-            "r_sum": float(r_rmse.sum()),
-            "t_mean": float(t_rmse.mean()) if t_rmse.size > 0 else 0.0,
-            "t_sum": float(t_rmse.sum()),
+            "r_mean": float(r_rmse.mean().item()) if r_rmse.numel() > 0 else 0.0,
+            "r_sum": float(r_rmse.sum().item()),
+            "t_mean": float(t_rmse.mean().item()) if t_rmse.numel() > 0 else 0.0,
+            "t_sum": float(t_rmse.sum().item()),
         }
 
     def train(self, train_dataset, val_dataset=None) -> list[dict]:

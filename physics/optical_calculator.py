@@ -46,6 +46,24 @@ def _find_column(columns, candidates):
     return None
 
 
+def resolve_complex_dtype(complex_dtype):
+    """把配置中的 complex dtype 解析成 torch dtype。"""
+
+    if complex_dtype is None:
+        return torch.complex128
+    if isinstance(complex_dtype, torch.dtype):
+        if complex_dtype in (torch.complex64, torch.complex128):
+            return complex_dtype
+        raise ValueError("complex_dtype 只能是 torch.complex64 或 torch.complex128")
+
+    resolved = str(complex_dtype).strip().lower()
+    if resolved in {"complex64", "torch.complex64", "c64"}:
+        return torch.complex64
+    if resolved in {"complex128", "torch.complex128", "c128"}:
+        return torch.complex128
+    raise ValueError(f"不支持的 complex_dtype: {complex_dtype}")
+
+
 def load_material_data(filename, database_path=None):
     """
     从 Excel 文件加载材料数据
@@ -148,6 +166,8 @@ def calculate_optical_properties_batch(
     num_points=1000,
     incident_angle=0.0,
     polarization=0,
+    device=None,
+    complex_dtype=torch.complex128,
     plot_results=False,
     debug=False,
 ):
@@ -173,8 +193,8 @@ def calculate_optical_properties_batch(
         num_points=num_points,
         incident_angle=incident_angle,
         polarization=polarization,
-        device=None,
-        complex_dtype=torch.complex128,
+        device=device,
+        complex_dtype=complex_dtype,
         keep_grad=False,
         debug=debug,
     )
@@ -221,6 +241,7 @@ def calculate_optical_properties_batch_torch(
         reflections_t: (batch_size, num_points) torch.Tensor
         transmissions_t: (batch_size, num_points) torch.Tensor
     """
+    complex_dtype = resolve_complex_dtype(complex_dtype)
     if complex_dtype not in (torch.complex64, torch.complex128):
         print("错误: complex_dtype 只能是 torch.complex64 或 torch.complex128")
         return None, None, None
