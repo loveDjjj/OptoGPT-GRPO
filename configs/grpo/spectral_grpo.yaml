@@ -7,7 +7,7 @@ experiment:
   name: spectral_grpo
   seed: 42
 
-device: auto
+device: cuda:0
 
 paths:
   # 基座模型 checkpoint
@@ -28,7 +28,7 @@ data:
   max_val_samples: null
   # `num_workers > 0` 就是多进程加载。
   # 这里默认保持较高 worker 数，优先降低多卡时的数据等待。
-  num_workers: 64
+  num_workers: 8
   pin_memory: true
   prefetch_factor: 4
   val_ratio: 0.0
@@ -44,7 +44,7 @@ sampling:
     start_mat: null
     max_len: null
     # rollout 会把每个 target 扩成 K 个候选，默认把该 batch 做到较大，提高 GPU 利用率。
-    batch_size: 4096
+    batch_size: 2048
   eval:
     # 训练过程中的验证与独立评测仍使用 greedy，保证指标稳定可比。
     decode: greedy
@@ -54,12 +54,12 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
-    batch_size: 4096
+    batch_size: 2048
 
 training:
   epochs: 5
   # 这里的 batch_size 按 target spectrum 计；真实 rollout 样本数为 batch_size * group_size。
-  batch_size: 1024
+  batch_size: 256
   learning_rate: 1.0e-5
   weight_decay: 0.0
   grad_clip_norm: 1.0
@@ -67,7 +67,7 @@ training:
   log_interval: 500
   eval_every_epochs: 1
   # 默认每条 target 光谱采样 4 个候选结构，按组内 reward 构造 advantage。
-  group_size: 4
+  group_size: 8
   clip_epsilon: 0.2
   # `zscore` 会按组内均值/标准差标准化 reward；`center` 只做均值中心化。
   advantage_mode: zscore
@@ -78,7 +78,7 @@ training:
   # 只影响日志里的 sequence loss 统计；GRPO ratio 始终使用未归一化的序列 logprob 求和。
   normalize_logprob_by_length: true
   # current logprob 重算默认直接覆盖整个 B*K rollout 样本批次，提高 GPU 并行率。
-  scoring_batch_size: 4096
+  scoring_batch_size: 2048
   save_best: true
   save_final: true
   # 训练结束后由主进程根据按 epoch 汇总的 CSV 自动绘制曲线总览。
@@ -86,8 +86,8 @@ training:
 
 evaluation:
   # 验证默认不开绘图和样本落盘，因此无梯度评测 batch 可以适当调大。
-  batch_size: 1024
-  scoring_batch_size: 4096
+  batch_size: 2048
+  scoring_batch_size: 2048
   save_samples: false
   save_plots: false
   save_predicted_spectra: false
@@ -101,7 +101,7 @@ tmm:
   polarization: 0
   material_aliases: {}
   # rollout 的候选结构会批量送入 TMM；这里默认和 B*K 对齐以减少分批次数。
-  batch_size: 4096
+  batch_size: 2048
   # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
   fixed_max_layers: 20
@@ -109,7 +109,7 @@ tmm:
   pad_material: Air
   debug: false
   # GRPO 训练默认优先跑 complex64，提高 TMM GPU 吞吐；若数值稳定性不足再切回 complex128。
-  complex_dtype: complex64
+  complex_dtype: complex128
   # 当前默认直接比较拼接后的 R/T 光谱，不再使用吸收率误差。
   metric: rt_rmse
 
