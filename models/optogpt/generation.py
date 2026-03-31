@@ -9,6 +9,7 @@ import torch
 
 from core.transformer import subsequent_mask
 from .checkpoint import OptoGPTModel
+from .policy import policy_log_probs_from_raw_log_probs, validate_policy_config
 
 
 _SUBSEQUENT_MASK_CACHE: dict[tuple[str, str, int], torch.Tensor] = {}
@@ -40,6 +41,8 @@ class GeneratedStructure:
     structure_tokens: List[str]
     raw_logprobs: List[float]
     sequence_raw_logprob: float
+    policy_logprobs: List[float]
+    sequence_policy_logprob: float
     terminated_by_eos: bool
     max_len_reached: bool
     decode: str
@@ -74,59 +77,6 @@ def _combine_seed_sequence(seeds: Optional[Sequence[Optional[int]]]) -> Optional
     return int(combined % (2**63 - 1))
 
 
-def _filtered_distribution_batch(
-    raw_log_prob: torch.Tensor,
-    decode_config: DecodeConfig,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """对下一 token 分布做 greedy / top-k / top-p 过滤。"""
-
-    if raw_log_prob.dim() != 2:
-        raise ValueError(f"raw_log_prob 必须是二维张量 [batch, vocab]，当前形状为 {tuple(raw_log_prob.shape)}")
-    if decode_config.temperature <= 0:
-        raise ValueError("temperature 必须大于 0。")
-    if decode_config.top_k < 0:
-        raise ValueError("top_k 不能小于 0。")
-    if not 0 < decode_config.top_p <= 1:
-        raise ValueError("top_p 必须在 (0, 1] 之间。")
-    if decode_config.decode not in {"greedy", "top-k", "sample"}:
-        raise ValueError(f"不支持的 decode 模式: {decode_config.decode}")
-
-    tempered_log_prob = raw_log_prob / decode_config.temperature
-    prob = torch.softmax(tempered_log_prob, dim=-1)
-
-    if decode_config.decode == "greedy":
-        greedy_idx = torch.argmax(prob, dim=-1, keepdim=True)
-        filtered = torch.zeros_like(prob)
-        filtered.scatter_(1, greedy_idx, 1.0)
-        return prob, filtered
-
-    filtered = prob.clone()
-    vocab_size = filtered.size(-1)
-    if decode_config.decode == "top-k":
-        if decode_config.top_k > 0 and decode_config.top_k < vocab_size:
-            topk_values = torch.topk(filtered, decode_config.top_k, dim=-1).values
-            kth = topk_values[:, -1:].expand_as(filtered)
-            filtered = torch.where(filtered < kth, torch.zeros_like(filtered), filtered)
-
-        if decode_config.top_p < 1.0:
-            sorted_prob, sorted_idx = torch.sort(filtered, descending=True, dim=-1)
-            cumulative = torch.cumsum(sorted_prob, dim=-1)
-            remove_mask = cumulative > decode_config.top_p
-            remove_mask[:, 1:] = remove_mask[:, :-1].clone()
-            remove_mask[:, 0] = False
-            sorted_prob = torch.where(remove_mask, torch.zeros_like(sorted_prob), sorted_prob)
-            filtered.zero_()
-            filtered.scatter_(1, sorted_idx, sorted_prob)
-
-    filtered_sum = filtered.sum(dim=-1, keepdim=True)
-    empty_mask = filtered_sum <= 0
-    if empty_mask.any():
-        filtered = torch.where(empty_mask, prob, filtered)
-        filtered_sum = filtered.sum(dim=-1, keepdim=True)
-    filtered = filtered / filtered_sum.clamp_min(1e-12)
-    return prob, filtered
-
-
 def _cached_subsequent_mask(length: int, reference: torch.Tensor) -> torch.Tensor:
     """缓存下三角 mask，避免自回归每一步都重新在 CPU 构造。"""
 
@@ -154,6 +104,7 @@ def generate_structures_for_targets(
 
     if num_samples_per_target <= 0 or len(target_spectra) == 0:
         return []
+    validate_policy_config(decode_config)
 
     target_count = len(target_spectra)
     resolved_target_indices = (
@@ -178,14 +129,14 @@ def generate_structures_for_targets(
     if torch.is_tensor(target_spectra):
         if target_spectra.dim() == 1:
             target_spectra = target_spectra.view(1, -1)
-        expanded_spectra_tensor = target_spectra.repeat((num_samples_per_target, 1))
-        for candidate_index in range(num_samples_per_target):
-            expanded_target_indices.extend(resolved_target_indices)
-            expanded_candidate_indices.extend([candidate_index] * target_count)
+        expanded_spectra_tensor = target_spectra.repeat_interleave(num_samples_per_target, dim=0)
+        for target_index in resolved_target_indices:
+            expanded_target_indices.extend([target_index] * num_samples_per_target)
+            expanded_candidate_indices.extend(range(num_samples_per_target))
     else:
         expanded_spectra_tensor = None
-        for candidate_index in range(num_samples_per_target):
-            for target_spectrum, target_index in zip(target_spectra, resolved_target_indices):
+        for target_spectrum, target_index in zip(target_spectra, resolved_target_indices):
+            for candidate_index in range(num_samples_per_target):
                 expanded_spectra.append(target_spectrum)
                 expanded_target_indices.append(target_index)
                 expanded_candidate_indices.append(candidate_index)
@@ -257,6 +208,11 @@ def _decode_from_src_batch(
         dtype=torch.float32,
         device=model.device,
     )
+    step_policy_logprobs = torch.zeros(
+        (num_samples, max_decode_steps),
+        dtype=torch.float32,
+        device=model.device,
+    )
     generated_lengths = torch.zeros((num_samples,), dtype=torch.long, device=model.device)
     terminated_by_eos = torch.zeros((num_samples,), dtype=torch.bool, device=model.device)
     active_mask = torch.ones(num_samples, dtype=torch.bool, device=model.device)
@@ -268,17 +224,24 @@ def _decode_from_src_batch(
             trg_mask = _cached_subsequent_mask(current_len, src.data)
             out = model.model(src, ys[:, :current_len], None, trg_mask)
             raw_log_prob = model.generator(out[:, -1])
-            _, sample_prob = _filtered_distribution_batch(raw_log_prob, decode_config)
+            policy_log_prob = policy_log_probs_from_raw_log_probs(raw_log_prob, decode_config)
+            sample_prob = policy_log_prob.exp()
 
             if decode_config.decode == "greedy":
-                next_ids = torch.argmax(sample_prob, dim=-1)
+                next_ids = torch.argmax(policy_log_prob, dim=-1)
             else:
                 next_ids = torch.multinomial(sample_prob, num_samples=1, generator=rng).squeeze(-1)
 
             step_raw_logprob = raw_log_prob.gather(1, next_ids.unsqueeze(-1)).squeeze(-1)
+            step_policy_logprob = policy_log_prob.gather(1, next_ids.unsqueeze(-1)).squeeze(-1)
             next_ids_to_append = torch.where(active_mask, next_ids, torch.full_like(next_ids, pad_id))
             ys[:, current_len] = next_ids_to_append
             step_logprobs[:, step_idx] = torch.where(active_mask, step_raw_logprob, torch.zeros_like(step_raw_logprob))
+            step_policy_logprobs[:, step_idx] = torch.where(
+                active_mask,
+                step_policy_logprob,
+                torch.zeros_like(step_policy_logprob),
+            )
             generated_lengths = generated_lengths + active_mask.to(dtype=torch.long)
             eos_finished = active_mask & next_ids.eq(eos_id)
             terminated_by_eos = terminated_by_eos | eos_finished
@@ -292,6 +255,7 @@ def _decode_from_src_batch(
         token_count = int(generated_lengths[sample_idx].item())
         token_ids = generated_token_ids[sample_idx, :token_count].tolist()
         raw_logprob_list = step_logprobs[sample_idx, :token_count].tolist()
+        policy_logprob_list = step_policy_logprobs[sample_idx, :token_count].tolist()
         tokens = [model.token_id_to_str(token_id) for token_id in token_ids]
         samples.append(
             GeneratedStructure(
@@ -303,6 +267,8 @@ def _decode_from_src_batch(
                 structure_tokens=model.token_ids_to_structure_tokens(token_ids, stop_at_eos=True),
                 raw_logprobs=raw_logprob_list,
                 sequence_raw_logprob=float(sum(raw_logprob_list)),
+                policy_logprobs=policy_logprob_list,
+                sequence_policy_logprob=float(sum(policy_logprob_list)),
                 terminated_by_eos=bool(terminated_by_eos[sample_idx].item()),
                 max_len_reached=not bool(terminated_by_eos[sample_idx].item()),
                 decode=decode_config.decode,

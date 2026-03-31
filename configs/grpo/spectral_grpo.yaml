@@ -1,6 +1,5 @@
 # =========================
-# 兼容配置：spectral_sft 已迁移到 GRPO 路径
-# 推荐改用 configs/grpo/spectral_grpo.yaml
+# OptoGPT 光谱 GRPO 训练配置
 # =========================
 
 experiment:
@@ -11,6 +10,7 @@ experiment:
 device: auto
 
 paths:
+  # 基座模型 checkpoint
   checkpoint: model/optogpt.pt
   output_dir: outputs/grpo
   materials_dir: data/materials
@@ -18,12 +18,16 @@ paths:
 data:
   train_spectrum_path: dataset/Spectrum_train.npy
   train_structure_path: dataset/Structure_train.npy
+  # GRPO 训练阶段只依赖目标光谱，不依赖训练集真值结构。
+  # 打开后可避免每个 rank 都加载超大的 Structure_train.npy，加快多卡启动。
   skip_train_structure_loading: true
   # 当前阶段仍沿用仓库现有验证集路径；若要严格区分 val/test，路径待确认。
   val_spectrum_path: dataset/Spectrum_test.npy
   val_structure_path: dataset/Structure_test.npy
   max_train_samples: null
   max_val_samples: null
+  # `num_workers > 0` 就是多进程加载。
+  # 这里默认保持较高 worker 数，优先降低多卡时的数据等待。
   num_workers: 64
   pin_memory: true
   prefetch_factor: 4
@@ -39,8 +43,10 @@ sampling:
     start_symbol: BOS
     start_mat: null
     max_len: null
+    # rollout 会把每个 target 扩成 K 个候选，默认把该 batch 做到较大，提高 GPU 利用率。
     batch_size: 4096
   eval:
+    # 训练过程中的验证与独立评测仍使用 greedy，保证指标稳定可比。
     decode: greedy
     top_k: 10
     top_p: 0.9
@@ -52,6 +58,7 @@ sampling:
 
 training:
   epochs: 5
+  # 这里的 batch_size 按 target spectrum 计；真实 rollout 样本数为 batch_size * group_size。
   batch_size: 1024
   learning_rate: 1.0e-5
   weight_decay: 0.0
@@ -59,19 +66,26 @@ training:
   grad_accum_steps: 1
   log_interval: 500
   eval_every_epochs: 1
+  # 默认每条 target 光谱采样 4 个候选结构，按组内 reward 构造 advantage。
   group_size: 4
   clip_epsilon: 0.2
+  # `zscore` 会按组内均值/标准差标准化 reward；`center` 只做均值中心化。
   advantage_mode: zscore
   advantage_eps: 1.0e-6
+  # rollout 记录的 old logprobs 与 update 重算的 current logprobs 共用同一 policy 定义。
   # 这里的 `eval` 只表示关闭 dropout，不影响 scoring 阶段的 autograd 与参数更新。
   policy_forward_mode: eval
+  # 是否按序列长度归一化 sequence logprob；打开后更不容易偏向短序列。
   normalize_logprob_by_length: true
+  # current logprob 重算默认直接覆盖整个 B*K rollout 样本批次，提高 GPU 并行率。
   scoring_batch_size: 4096
   save_best: true
   save_final: true
+  # 训练结束后由主进程根据按 epoch 汇总的 CSV 自动绘制曲线总览。
   save_epoch_plots: true
 
 evaluation:
+  # 验证默认不开绘图和样本落盘，因此无梯度评测 batch 可以适当调大。
   batch_size: 1024
   scoring_batch_size: 4096
   save_samples: false
@@ -86,15 +100,19 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   material_aliases: {}
+  # rollout 的候选结构会批量送入 TMM；这里默认和 B*K 对齐以减少分批次数。
   batch_size: 4096
+  # 固定补到 20 层，保证所有 batch 的 TMM 张量形状一致，减少形状抖动与分桶开销。
   pad_to_max_layers: true
   fixed_max_layers: 20
   bucket_by_layer_count: false
   pad_material: Air
   debug: false
+  # 当前默认直接比较拼接后的 R/T 光谱，不再使用吸收率误差。
   metric: rt_rmse
 
 losses:
+  # `rt_rmse` 表示直接比较 `[R..., T...]` 两段光谱的 RMSE。
   spectrum_metric: rt_rmse
   invalid_structure_penalty: 1.0
   nonphysical_spectrum_penalty: 1.0
@@ -102,6 +120,7 @@ losses:
 
 logging:
   console_log: true
+  # 是否按 DataLoader 的 batch 数量显示 tqdm 进度条。
   show_progress_bar: true
 
 distributed:

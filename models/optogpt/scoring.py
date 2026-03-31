@@ -1,4 +1,4 @@
-"""OptoGPT teacher forcing 打分工具。"""
+"""OptoGPT teacher forcing / policy-aware 打分工具。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import torch
 
 from core.transformer import subsequent_mask
 from .checkpoint import OptoGPTModel
+from .policy import PolicyConfigLike, policy_log_probs_from_raw_log_probs
 
 
 _SUBSEQUENT_MASK_CACHE: dict[tuple[str, str, int], torch.Tensor] = {}
@@ -94,14 +95,15 @@ def sequence_logprobs_multi_target_batch_tensor(
     token_id_groups: Sequence[Sequence[int]],
     start_symbol: str = "BOS",
     start_mat: Optional[str] = None,
+    decode_config: Optional[PolicyConfigLike] = None,
     require_grad: bool = False,
     batch_size: Optional[int] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """批量重算给定结构序列在当前模型下的 token 对数概率。
 
     用途：
-    - 评测时计算真实结构的序列损失；
-    - 训练时计算模型自己生成结构的对数概率，用于构造可反传目标。
+    - 评测时计算真实结构在原始模型分布下的序列损失；
+    - GRPO 训练时计算给定结构在 rollout policy 定义下的 logprob。
     """
 
     sequences = [[int(token_id) for token_id in token_ids] for token_ids in token_id_groups]
@@ -147,6 +149,8 @@ def sequence_logprobs_multi_target_batch_tensor(
             raw_log_probs = model.generator(out)
             gather_positions = slice(prompt_len - 1, prompt_len - 1 + chunk_max_target_len)
             relevant_log_probs = raw_log_probs[:, gather_positions, :]
+            if decode_config is not None:
+                relevant_log_probs = policy_log_probs_from_raw_log_probs(relevant_log_probs, decode_config)
             gathered = relevant_log_probs.gather(-1, target_ids.unsqueeze(-1)).squeeze(-1)
             stop = start + len(batch_sequences)
             all_logprobs[start:stop, :chunk_max_target_len] = gathered

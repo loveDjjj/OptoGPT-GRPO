@@ -253,11 +253,11 @@ def save_eval_distribution_summary(
     plt.close(figure)
 
 
-def save_sft_epoch_summary_plot(
+def save_grpo_epoch_summary_plot(
     path: str | Path,
     rows: Sequence[Mapping],
 ) -> None:
-    """保存 spectral SFT 的 epoch 级训练/验证曲线总览。"""
+    """保存 spectral GRPO 的 epoch 级训练/验证曲线总览。"""
 
     if not rows:
         return
@@ -265,7 +265,7 @@ def save_sft_epoch_summary_plot(
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
-        raise ImportError("matplotlib is required to save spectral SFT epoch plots.") from exc
+        raise ImportError("matplotlib is required to save spectral GRPO epoch plots.") from exc
 
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +292,7 @@ def save_sft_epoch_summary_plot(
     val_spec = _series("val_spectrum_loss")
 
     figure, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
-    figure.suptitle("Spectral SFT Epoch Summary")
+    figure.suptitle("Spectral GRPO Epoch Summary")
 
     curve_specs = [
         (axes[0, 0], "R-RMSE vs Epoch", "R-RMSE", train_r, val_r),
@@ -314,3 +314,12 @@ def save_sft_epoch_summary_plot(
     figure.tight_layout()
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
+
+
+def save_sft_epoch_summary_plot(
+    path: str | Path,
+    rows: Sequence[Mapping],
+) -> None:
+    """兼容旧名称：内部转发到 GRPO 版本。"""
+
+    save_grpo_epoch_summary_plot(path=path, rows=rows)

@@ -184,7 +184,7 @@ class SpectrumEvaluator:
             dataloader_kwargs["prefetch_factor"] = self.prefetch_factor
         dataloader = DataLoader(**dataloader_kwargs)
 
-        self.model.raw_model.eval()
+        self.model.model.eval()
         metric_accumulator = MetricAccumulator()
         distribution_accumulator = (
             DistributionPlotAccumulator(

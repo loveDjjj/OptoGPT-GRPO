@@ -17,7 +17,7 @@ def build_split_datasets(config: Dict[str, Any]) -> Dict[str, OptoGPTPairDataset
     """
 
     data_cfg = config["data"]
-    # spectral SFT 训练阶段只依赖目标光谱，不依赖真值结构。
+    # spectral GRPO 训练阶段只依赖目标光谱，不依赖真值结构。
     # 当该开关打开时，可以避免把超大的 Structure_train.npy
     # 在每个 DDP rank 中各加载一份。
     skip_train_structure_loading = bool(data_cfg.get("skip_train_structure_loading", False))

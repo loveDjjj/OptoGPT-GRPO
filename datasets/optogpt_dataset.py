@@ -66,7 +66,7 @@ class OptoGPTPairDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         sample_index = int(self.indices[index])
         spectrum = np.asarray(self._spectra[sample_index], dtype=np.float32)
-        # 训练阶段如果只优化光谱损失，则不需要真值结构。
+        # GRPO 训练阶段只依赖目标光谱 reward，因此不需要训练集真值结构。
         # 允许 structure_path 为空，可以避免每个 rank 都加载超大的 object 数组，
         # 显著降低多卡启动时的 CPU 内存与磁盘 I/O 压力。
         if self._structures is None:
