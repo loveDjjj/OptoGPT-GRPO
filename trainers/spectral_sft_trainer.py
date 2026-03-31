@@ -51,6 +51,7 @@ class SpectralSFTTrainer:
         self.center_spectrum_loss = bool(training_cfg.get("center_spectrum_loss", True))
         self.normalize_logprob_by_length = bool(training_cfg.get("normalize_logprob_by_length", True))
         self.train_num_samples_per_target = int(training_cfg.get("num_samples_per_target", 1))
+        self.policy_forward_mode = str(training_cfg.get("policy_forward_mode", "eval")).strip().lower()
         self.num_workers = int(data_cfg.get("num_workers", 0))
         self.pin_memory = bool(data_cfg.get("pin_memory", False))
         self.prefetch_factor = int(data_cfg.get("prefetch_factor", 2))
@@ -61,6 +62,11 @@ class SpectralSFTTrainer:
         self.show_progress_bar = bool(logging_cfg.get("show_progress_bar", True))
 
         self.train_decode_config = build_decode_config(config["sampling"]["train"], default_max_len=self.model.max_len)
+        if self.policy_forward_mode not in {"train", "eval"}:
+            raise ValueError(
+                "training.policy_forward_mode 只支持 'train' 或 'eval'，"
+                f"当前为 {self.policy_forward_mode!r}"
+            )
         self.tmm_kwargs = {
             "wavelength_range_um": tmm_cfg["wavelength_range_um"],
             "num_points": int(tmm_cfg["num_points"]),
@@ -162,95 +168,109 @@ class SpectralSFTTrainer:
 
         这不是 PPO/GRPO，也不引入参考模型和裁剪项；训练目标完全来自光谱误差。
         """
-
-        self._update_progress_stage(progress, "generate")
-        generated = generate_structures_for_targets(
-            model=self.model,
-            target_spectra=spectra,
-            decode_config=self.train_decode_config,
-            num_samples_per_target=self.train_num_samples_per_target,
-            target_indices=list(sample_indices),
-            seeds=[int(self.config["experiment"]["seed"]) + int(sample_index) for sample_index in sample_indices],
-        )
-        if torch.is_tensor(spectra):
-            expanded_spectra = spectra.repeat((self.train_num_samples_per_target, 1))
+        # 这里把 rollout 和 score 两次前向统一到同一个策略模式下。
+        # 当 policy_forward_mode='eval' 时，只是关闭 dropout 等训练态随机层；
+        # scoring 仍会通过 require_grad=True 保留 autograd，并正常反传参数。
+        previous_training = bool(self.model.model.training)
+        if self.policy_forward_mode == "eval":
+            self.model.model.eval()
         else:
-            expanded_spectra = []
-            for _ in range(self.train_num_samples_per_target):
-                expanded_spectra.extend(list(spectra))
-        # 训练阶段只需要光谱损失和有效样本掩码，不需要逐样本 dict。
-        # 这里直接走批量数组快路，减少 Python 对象构造和二次遍历。
-        self._update_progress_stage(progress, "tmm")
-        spectrum_aux = evaluate_generated_structures(
-            structure_token_groups=[item.structure_tokens for item in generated],
-            target_spectra=expanded_spectra,
-            return_item_results=False,
-            return_aux_arrays=True,
-            **self.tmm_kwargs,
-        )
-        token_id_groups = [item.token_ids for item in generated]
-        sync_context = nullcontext()
-        if not sync_gradients and hasattr(self.model.model, "no_sync"):
-            sync_context = self.model.model.no_sync()
+            self.model.model.train()
 
-        with sync_context:
-            self._update_progress_stage(progress, "score")
-            logprobs, token_mask = sequence_logprobs_multi_target_batch_tensor(
+        try:
+            self._update_progress_stage(progress, "generate")
+            generated = generate_structures_for_targets(
                 model=self.model,
+                target_spectra=spectra,
+                decode_config=self.train_decode_config,
+                num_samples_per_target=self.train_num_samples_per_target,
+                target_indices=list(sample_indices),
+                seeds=[int(self.config["experiment"]["seed"]) + int(sample_index) for sample_index in sample_indices],
+            )
+            if torch.is_tensor(spectra):
+                expanded_spectra = spectra.repeat((self.train_num_samples_per_target, 1))
+            else:
+                expanded_spectra = []
+                for _ in range(self.train_num_samples_per_target):
+                    expanded_spectra.extend(list(spectra))
+            # 训练阶段只需要光谱损失和有效样本掩码，不需要逐样本 dict。
+            # 这里直接走批量数组快路，减少 Python 对象构造和二次遍历。
+            self._update_progress_stage(progress, "tmm")
+            spectrum_aux = evaluate_generated_structures(
+                structure_token_groups=[item.structure_tokens for item in generated],
                 target_spectra=expanded_spectra,
-                token_id_groups=token_id_groups,
-                start_symbol=self.train_decode_config.start_symbol,
-                start_mat=self.train_decode_config.start_mat,
-                require_grad=True,
-                batch_size=self.batch_size,
+                return_item_results=False,
+                return_aux_arrays=True,
+                **self.tmm_kwargs,
             )
-            if logprobs.numel() == 0:
-                zero = torch.zeros((), dtype=torch.float32, device=self.model.device)
-                return {
-                    "sample_count": 0,
-                    "objective_mean": zero,
-                    "objective_sum": zero,
-                    "spectrum_mean": zero,
-                    "spectrum_sum": zero,
-                    "sequence_mean": zero,
-                    "sequence_sum": zero,
-                    "valid_ratio": 0.0,
-                    "valid_count": 0.0,
-                    "r_mean": 0.0,
-                    "r_sum": 0.0,
-                    "t_mean": 0.0,
-                    "t_sum": 0.0,
-                }
+            token_id_groups = [item.token_ids for item in generated]
+            sync_context = nullcontext()
+            if not sync_gradients and hasattr(self.model.model, "no_sync"):
+                sync_context = self.model.model.no_sync()
 
-            token_mask_float = token_mask.to(dtype=logprobs.dtype)
-            lengths = token_mask.sum(dim=-1).clamp_min(1).to(dtype=logprobs.dtype)
-            sequence_logprob = (logprobs * token_mask_float).sum(dim=-1)
-            if self.normalize_logprob_by_length:
-                sequence_logprob = sequence_logprob / lengths
-            sequence_loss_tensor = -sequence_logprob.detach()
+            with sync_context:
+                self._update_progress_stage(progress, "score")
+                logprobs, token_mask = sequence_logprobs_multi_target_batch_tensor(
+                    model=self.model,
+                    target_spectra=expanded_spectra,
+                    token_id_groups=token_id_groups,
+                    start_symbol=self.train_decode_config.start_symbol,
+                    start_mat=self.train_decode_config.start_mat,
+                    require_grad=True,
+                    batch_size=self.batch_size,
+                )
+                if logprobs.numel() == 0:
+                    zero = torch.zeros((), dtype=torch.float32, device=self.model.device)
+                    return {
+                        "sample_count": 0,
+                        "objective_mean": zero,
+                        "objective_sum": zero,
+                        "spectrum_mean": zero,
+                        "spectrum_sum": zero,
+                        "sequence_mean": zero,
+                        "sequence_sum": zero,
+                        "valid_ratio": 0.0,
+                        "valid_count": 0.0,
+                        "r_mean": 0.0,
+                        "r_sum": 0.0,
+                        "t_mean": 0.0,
+                        "t_sum": 0.0,
+                    }
 
-            spectrum_loss_tensor = torch.as_tensor(
-                spectrum_aux["spectrum_losses"],
-                dtype=logprobs.dtype,
-                device=self.model.device,
-            )
-            batch_sample_count = int(spectrum_loss_tensor.numel())
-            valid_count = float(np.sum(spectrum_aux["ok_mask"].astype(np.float32)))
-            valid_ratio = valid_count / float(batch_sample_count) if batch_sample_count > 0 else 0.0
-            r_rmse = np.asarray(spectrum_aux["r_rmse"], dtype=np.float32)
-            t_rmse = np.asarray(spectrum_aux["t_rmse"], dtype=np.float32)
+                token_mask_float = token_mask.to(dtype=logprobs.dtype)
+                lengths = token_mask.sum(dim=-1).clamp_min(1).to(dtype=logprobs.dtype)
+                sequence_logprob = (logprobs * token_mask_float).sum(dim=-1)
+                if self.normalize_logprob_by_length:
+                    sequence_logprob = sequence_logprob / lengths
+                sequence_loss_tensor = -sequence_logprob.detach()
 
-            weight_tensor = spectrum_loss_tensor
-            if self.center_spectrum_loss and spectrum_loss_tensor.numel() > 1:
-                weight_tensor = spectrum_loss_tensor - spectrum_loss_tensor.mean()
+                spectrum_loss_tensor = torch.as_tensor(
+                    spectrum_aux["spectrum_losses"],
+                    dtype=logprobs.dtype,
+                    device=self.model.device,
+                )
+                batch_sample_count = int(spectrum_loss_tensor.numel())
+                valid_count = float(np.sum(spectrum_aux["ok_mask"].astype(np.float32)))
+                valid_ratio = valid_count / float(batch_sample_count) if batch_sample_count > 0 else 0.0
+                r_rmse = np.asarray(spectrum_aux["r_rmse"], dtype=np.float32)
+                t_rmse = np.asarray(spectrum_aux["t_rmse"], dtype=np.float32)
 
-            # 注意：这里优化的是 E[loss * logprob]。
-            # 开启中心化后，低于 batch 均值的样本会得到负权重，从而被提升概率；
-            # 高于 batch 均值的样本得到正权重，会被压低概率。
-            # 这条语义依赖 center_spectrum_loss=True，因此保持显式注释。
-            objective = torch.mean(weight_tensor.detach() * sequence_logprob)
-            self._update_progress_stage(progress, "backward")
-            objective.backward()
+                weight_tensor = spectrum_loss_tensor
+                if self.center_spectrum_loss and spectrum_loss_tensor.numel() > 1:
+                    weight_tensor = spectrum_loss_tensor - spectrum_loss_tensor.mean()
+
+                # 注意：这里优化的是 E[loss * logprob]。
+                # 开启中心化后，低于 batch 均值的样本会得到负权重，从而被提升概率；
+                # 高于 batch 均值的样本得到正权重，会被压低概率。
+                # 这条语义依赖 center_spectrum_loss=True，因此保持显式注释。
+                objective = torch.mean(weight_tensor.detach() * sequence_logprob)
+                self._update_progress_stage(progress, "backward")
+                objective.backward()
+        finally:
+            if previous_training:
+                self.model.model.train()
+            else:
+                self.model.model.eval()
 
         objective_detached = objective.detach()
         return {
@@ -297,7 +317,7 @@ class SpectralSFTTrainer:
         for epoch in range(1, self.epochs + 1):
             if sampler is not None:
                 sampler.set_epoch(epoch)
-            self.model.raw_model.train()
+            self.model.model.train()
             self.optimizer.zero_grad(set_to_none=True)
 
             epoch_objective_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)

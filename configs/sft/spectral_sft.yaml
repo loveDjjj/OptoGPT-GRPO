@@ -25,7 +25,7 @@ data:
   val_spectrum_path: dataset/Spectrum_test.npy
   val_structure_path: dataset/Structure_test.npy
   max_train_samples: null
-  max_val_samples: 102400
+  max_val_samples: null
   # `num_workers > 0` 就是多进程加载。
   # 这里默认调到 8，优先改善单卡时的数据等待；多卡时若 CPU 压力过大，可按每卡 4 往回调。
   num_workers: 64
@@ -67,6 +67,10 @@ training:
   eval_every_epochs: 1
   # 每条目标光谱生成几个候选结构。当前先默认 1，保证主流程稳定。
   num_samples_per_target: 1
+  # rollout 采样和重算 logprob 默认共用 `eval` 前向模式，
+  # 只关闭 dropout，不影响 score 阶段的 autograd 与参数更新。
+  # 若明确希望把 dropout 也视作策略随机性的一部分，再手动切回 `train`。
+  policy_forward_mode: eval
   # 是否对 batch 内光谱损失做去中心化。
   # 开启后：低于 batch 均值的样本会被提升概率，高于均值的样本会被压低概率。
   center_spectrum_loss: true

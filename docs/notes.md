@@ -1,54 +1,37 @@
 # 本次修改摘要
 
 ## 需求
-- 阅读 `analysis_optogpt.ipynb` 中的 t-SNE 代码。
-- 新增独立 Python 入口，用于对比 SFT 前后两个 OptoGPT checkpoint 的隐藏表示 t-SNE。
+- 检查 spectral SFT 训练中 rollout 采样与重算 `logprob` 是否使用了同一个策略前向。
+- 若训练态 `dropout` 会导致两次前向对应不同策略，则修复该问题。
 
-## notebook 中 t-SNE 的原始逻辑
-- `analysis_optogpt.ipynb`
-  - `cell 34`
-    - `hidedn_spec = model.fc(hidden_index.to(DEVICE))`
-    - 从模型 `fc` 提取光谱隐藏表示
-    - 根据 checkpoint 里的 `struc_word_dict` 构造 `mat_index`
-  - `cell 35`
-    - 把 `hidedn_struc` 与 `hidedn_spec` 拼接后做 `MinMaxScaler + TSNE`
-  - `cell 36`
-    - 按材料类别和光谱点分别绘制散点图
+## 代码分析结论
+- `trainers/spectral_sft_trainer.py` 在每个 epoch 开头把模型切到 `train()`。
+- 训练 batch 内先调用 `generate_structures_for_targets(...)` 做 rollout，再调用 `sequence_logprobs_multi_target_batch_tensor(...)` 重算生成序列的 `logprob` 并反传。
+- 原实现中，这两次前向都继承外层 `train()` 模式：
+  - rollout 虽然用了 `torch.inference_mode()`，但不会关闭 `dropout`
+  - scoring 虽然保留 autograd，但也仍然会使用另一份训练态 `dropout` mask
+- 因此会出现“采样策略”和“反传策略”不完全一致的问题，额外增加方差。
 
 ## 实际修改
-- `runners/run_tsne_compare.py`
-  - 新增独立 runner：
-    - 同时加载 before / after 两个 checkpoint
-    - 提取两者的结构 token embedding
-    - 提取两者对同一批光谱的 `fc` 隐藏表示
-    - 把 before/after 的结构与光谱隐藏表示拼接后做一次共享 t-SNE
-    - 输出共享坐标系下的 before/after 双面板对比图
-  - 输出：
-    - `tsne_compare.png`
-    - `tsne_points.npz`
-    - `metadata.json`
-  - 兼容 `.npy/.pkl` 光谱文件
-  - 保持 notebook 里的材料顺序、颜色和图例语义
-  - 比 notebook 额外改进：
-    - before/after 共用一次 t-SNE 拟合，避免单独拟合导致两张图坐标系不可比
-- 修复：
-  - 同时处理了 `numpy 2.x` 下 `ndarray.ptp()` 被移除的问题，改为 `np.ptp(...)`
+- `trainers/spectral_sft_trainer.py`
+  - 新增 `training.policy_forward_mode` 配置读取与校验，仅支持 `train/eval`
+  - 在 `_train_batch(...)` 内让 rollout 和 score 两次前向共用同一个策略前向模式
+  - 默认使用 `eval` 前向模式关闭 `dropout`，但不影响 scoring 的 autograd 与 `backward()`
+  - batch 结束后恢复进入 `_train_batch(...)` 前的模块模式，避免影响外层流程
+  - 训练 epoch 开头改为显式对 `self.model.model` 调用 `train()`，兼容 DDP 包装
+- `configs/sft/spectral_sft.yaml`
+  - 新增 `training.policy_forward_mode: eval` 及注释
 
-## 运行示例
-```bash
-python runners/run_tsne_compare.py ^
-  --before-checkpoint model/optogpt.pt ^
-  --after-checkpoint outputs/sft/<run>/checkpoints/best.pt ^
-  --spectrum-path dataset/Spectrum_test.npy ^
-  --max-spectra 1000
-```
+## 影响
+- 默认情况下，rollout 采样和重算 `logprob` 将对应同一个无 `dropout` 的策略前向。
+- 训练仍然会在 scoring 阶段正常计算梯度并更新参数。
+- 若后续确实希望把 `dropout` 也视作策略随机性的一部分，可手动把配置切回 `train`。
 
 ## 验证
-- `D:\\anaconda\\envs\\oneday\\python.exe runners/run_tsne_compare.py --help`
-- `D:\\anaconda\\envs\\oneday\\python.exe runners/run_tsne_compare.py --before-checkpoint model/optogpt.pt --after-checkpoint model/optogpt.pt --spectrum-path dataset/Spectrum_test.npy --max-spectra 8 --batch-size 8 --n-iter 250 --output-dir outputs/_debug --name tsne_smoke --device auto`
+- `python -m compileall trainers models runners`
 
-结果：通过
+结果：待验证
 
 ## Git
-- branch: `feat/tsne-compare-runner`
-- commit: `git commit -m "feat: add tsne comparison runner for sft checkpoints"`
+- branch: `fix/sft-policy-forward-mode`
+- commit: `git commit -m "fix: align spectral sft rollout and scoring policy mode"`
