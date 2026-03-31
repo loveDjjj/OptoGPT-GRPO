@@ -6,7 +6,7 @@
 
 ## 修改前先读
 - 先读 `README.md`、`docs/notes.md`、当前需求涉及的代码文件和配置文件。
-- 涉及训练入口时，至少补读 `runners/run_spectral_sft.py` 和 `configs/sft/spectral_sft.yaml`。
+- 涉及训练入口时，至少补读 `runners/run_grpo.py` 和 `configs/grpo/spectral_grpo.yaml`。
 - 涉及评测入口时，至少补读 `runners/run_spectrum_eval.py` 和 `configs/eval/spectrum_eval.yaml`。
 - 涉及采样、光谱损失、TMM 或 checkpoint 时，补读对应模块再改。
 

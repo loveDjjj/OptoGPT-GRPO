@@ -14,8 +14,6 @@
   光谱评测配置。
 - `configs/grpo/`
   光谱 GRPO 训练配置。
-- `configs/sft/`
-  兼容旧路径的训练配置副本，建议改用 `configs/grpo/`。
 - `runners/`
   运行入口；`run_grpo.py` 为当前训练主入口。
 - `models/optogpt/`
@@ -25,7 +23,7 @@
 - `evaluators/`
   光谱评测逻辑与指标聚合。
 - `trainers/`
-  GRPO 训练器与兼容封装。
+  GRPO 训练器。
 - `losses/`
   序列损失、GRPO 目标与光谱损失。
 - `physics/`
@@ -93,12 +91,6 @@ python runners/run_grpo.py --config configs/grpo/spectral_grpo.yaml
 
 ```bash
 torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_grpo.yaml
-```
-
-兼容旧入口：
-
-```bash
-python runners/run_spectral_sft.py --config configs/sft/spectral_sft.yaml
 ```
 
 ## 多卡建议

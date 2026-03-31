@@ -314,12 +314,3 @@ def save_grpo_epoch_summary_plot(
     figure.tight_layout()
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
-
-
-def save_sft_epoch_summary_plot(
-    path: str | Path,
-    rows: Sequence[Mapping],
-) -> None:
-    """兼容旧名称：内部转发到 GRPO 版本。"""
-
-    save_grpo_epoch_summary_plot(path=path, rows=rows)
