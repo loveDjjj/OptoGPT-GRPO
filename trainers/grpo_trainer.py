@@ -104,7 +104,6 @@ class GRPOTrainer:
             "physical_tolerance": float(config["losses"].get("physical_tolerance", 0.01)),
             "database_path": str(config["paths"]["materials_dir"]),
             "material_aliases": tmm_cfg.get("material_aliases", {}),
-            "return_spectra": False,
             "pad_to_max_layers": bool(tmm_cfg.get("pad_to_max_layers", True)),
             "bucket_by_layer_count": bool(tmm_cfg.get("bucket_by_layer_count", True)),
             "fixed_max_layers": tmm_cfg.get("fixed_max_layers"),
