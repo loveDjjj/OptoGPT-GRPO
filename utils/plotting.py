@@ -21,6 +21,51 @@ def _get_target_curves(target: Mapping) -> tuple[np.ndarray, np.ndarray, np.ndar
     return wavelengths, reflection, transmission, absorption
 
 
+def _smooth_curve(
+    wavelengths: Sequence[float],
+    values: Sequence[float],
+    *,
+    enabled: bool,
+    method: str,
+    upsample_factor: int,
+    clip_to_unit_interval: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """按给定光谱点做平滑插值，生成更适合展示的高密度曲线。"""
+
+    wavelengths_np = np.asarray(wavelengths, dtype=np.float32).reshape(-1)
+    values_np = np.asarray(values, dtype=np.float32).reshape(-1)
+    if not enabled or wavelengths_np.size < 3 or wavelengths_np.size != values_np.size:
+        if clip_to_unit_interval:
+            values_np = np.clip(values_np, 0.0, 1.0)
+        return wavelengths_np, values_np
+
+    dense_count = max(int(wavelengths_np.size * max(1, int(upsample_factor))), int(wavelengths_np.size))
+    dense_wavelengths = np.linspace(float(wavelengths_np[0]), float(wavelengths_np[-1]), dense_count, dtype=np.float32)
+
+    try:
+        if str(method).strip().lower() in {"pchip", "monotonic"}:
+            from scipy.interpolate import PchipInterpolator
+
+            interpolator = PchipInterpolator(wavelengths_np, values_np)
+            dense_values = interpolator(dense_wavelengths)
+        elif str(method).strip().lower() in {"cubic", "spline", "cubic_spline"}:
+            from scipy.interpolate import make_interp_spline
+
+            spline_degree = min(3, int(wavelengths_np.size) - 1)
+            interpolator = make_interp_spline(wavelengths_np, values_np, k=spline_degree)
+            dense_values = interpolator(dense_wavelengths)
+        else:
+            dense_values = np.interp(dense_wavelengths, wavelengths_np, values_np)
+    except Exception:
+        # 出图只是辅助能力；若插值失败，退回原始点的线性插值，避免评测整体中断。
+        dense_values = np.interp(dense_wavelengths, wavelengths_np, values_np)
+
+    dense_values = np.asarray(dense_values, dtype=np.float32)
+    if clip_to_unit_interval:
+        dense_values = np.clip(dense_values, 0.0, 1.0)
+    return dense_wavelengths, dense_values
+
+
 def save_before_after_plot(
     path: str | Path,
     target: Mapping,
@@ -120,6 +165,11 @@ def save_spectrum_comparison_plot(
     title: str,
     spectrum_loss: float | None = None,
     status: str | None = None,
+    smooth_curves: bool = True,
+    smoothing_method: str = "pchip",
+    smoothing_upsample_factor: int = 8,
+    show_original_points: bool = True,
+    clip_to_unit_interval: bool = True,
 ) -> None:
     """保存单个样本的目标/预测光谱对比图。
 
@@ -159,9 +209,32 @@ def save_spectrum_comparison_plot(
         ("Absorption", target_a, pred_a),
     ]
     for axis, (label, target_curve, pred_curve) in zip(axes, curve_rows):
-        axis.plot(wavelengths, target_curve, label="target", linewidth=2.0, color="#1f1f1f")
-        axis.plot(wavelengths, pred_curve, label="predicted", linewidth=1.8, color="#d62828")
+        smooth_x_target, smooth_target = _smooth_curve(
+            wavelengths,
+            target_curve,
+            enabled=smooth_curves,
+            method=smoothing_method,
+            upsample_factor=smoothing_upsample_factor,
+            clip_to_unit_interval=clip_to_unit_interval,
+        )
+        smooth_x_pred, smooth_pred = _smooth_curve(
+            wavelengths,
+            pred_curve,
+            enabled=smooth_curves,
+            method=smoothing_method,
+            upsample_factor=smoothing_upsample_factor,
+            clip_to_unit_interval=clip_to_unit_interval,
+        )
+        raw_target = np.clip(np.asarray(target_curve, dtype=np.float32), 0.0, 1.0) if clip_to_unit_interval else np.asarray(target_curve, dtype=np.float32)
+        raw_pred = np.clip(np.asarray(pred_curve, dtype=np.float32), 0.0, 1.0) if clip_to_unit_interval else np.asarray(pred_curve, dtype=np.float32)
+
+        axis.plot(smooth_x_target, smooth_target, label="target", linewidth=2.2, color="#1f1f1f")
+        axis.plot(smooth_x_pred, smooth_pred, label="predicted", linewidth=1.9, color="#d62828")
+        if show_original_points:
+            axis.scatter(wavelengths, raw_target, s=10, color="#1f1f1f", alpha=0.4)
+            axis.scatter(wavelengths, raw_pred, s=10, color="#d62828", alpha=0.35)
         axis.set_ylabel(label)
+        axis.set_ylim(0.0, 1.0)
         axis.grid(alpha=0.25)
         axis.legend(loc="best", fontsize=9)
 

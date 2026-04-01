@@ -72,11 +72,20 @@ evaluation:
   # 是否保存目标光谱与生成光谱的可视化对比图。
   # 图像会输出到 outputs/eval/<exp>/plots/<split>/rankXX/ 下。
   # 逐样本折线图较慢，默认关闭；若要排查个例再手动打开。
-  save_plots: false
+  save_plots: true
   # 每个 rank 最多保存多少张图，避免全量评测时产出过大。
   plot_max_samples: 32
+  plot_smoothing:
+    # 保存逐样本图时，按原始光谱点做平滑插值后再绘制，避免直接折线过于生硬。
+    enabled: true
+    # `pchip` 为形状保持插值，通常比普通三次样条更稳，不容易过冲到 [0, 1] 外。
+    method: pchip
+    # 插值后采样点数相对原始波长点的放大倍数；越大越平滑，但出图稍慢。
+    upsample_factor: 4
+    # 是否同时保留原始离散点，便于核对平滑曲线是否忠实于原始光谱点。
+    show_original_points: true
   # 是否把预测光谱也写入样本记录。若开启，文件体积会明显增大。
-  save_predicted_spectra: false
+  save_predicted_spectra: true
 
 tmm:
   wavelength_range_um: [0.4, 1.1]
@@ -91,6 +100,10 @@ tmm:
   bucket_by_layer_count: false
   pad_material: Air
   debug: false
+  # TMM 复数精度：
+  # - complex64：更快、更省显存，默认用于大规模评测
+  # - complex128：数值更稳，但更慢、更占显存
+  complex_dtype: complex128
   # 这里只是为了保持配置结构统一，实际使用的指标由 losses.spectrum_metric 控制。
   # 当前默认直接比较拼接后的 R/T 光谱，不再使用吸收率误差。
   metric: rt_rmse

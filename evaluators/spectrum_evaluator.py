@@ -54,6 +54,11 @@ class SpectrumEvaluator:
         self.save_samples = bool(evaluation_cfg.get("save_samples", False))
         self.save_plots = bool(evaluation_cfg.get("save_plots", False))
         self.plot_max_samples = max(0, int(evaluation_cfg.get("plot_max_samples", 0)))
+        plot_smoothing_cfg = evaluation_cfg.get("plot_smoothing", {})
+        self.plot_smoothing = bool(plot_smoothing_cfg.get("enabled", True))
+        self.plot_smoothing_method = str(plot_smoothing_cfg.get("method", "pchip"))
+        self.plot_smoothing_upsample_factor = max(1, int(plot_smoothing_cfg.get("upsample_factor", 8)))
+        self.plot_show_original_points = bool(plot_smoothing_cfg.get("show_original_points", True))
         self.save_distribution_plots = bool(evaluation_cfg.get("save_distribution_plots", True))
         distribution_cfg = evaluation_cfg.get("distribution_plots", {})
         self.rt_rmse_bins = max(1, int(distribution_cfg.get("rt_rmse_bins", 100)))
@@ -318,6 +323,11 @@ class SpectrumEvaluator:
                                     title=f"{split_name} sample={int(sample_index)}",
                                     spectrum_loss=float(spectrum_result["spectrum_loss"]),
                                     status=str(spectrum_result["status"]),
+                                    smooth_curves=self.plot_smoothing,
+                                    smoothing_method=self.plot_smoothing_method,
+                                    smoothing_upsample_factor=self.plot_smoothing_upsample_factor,
+                                    show_original_points=self.plot_show_original_points,
+                                    clip_to_unit_interval=True,
                                 )
                                 plots_saved += 1
 
