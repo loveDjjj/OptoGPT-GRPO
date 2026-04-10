@@ -1,0 +1,25 @@
+seed: 42
+
+paths:
+  database_dir: ../../database
+  output_dir: our_work/data_gen/outputs/v1_smoke
+
+data:
+  layer_counts: [5, 6]
+  samples_per_bucket: 4
+  thickness_values_nm: [10, 20, 30, 40, 50]
+
+tmm:
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 32
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex128
+
+shards:
+  records_per_shard: 16
+
+splits:
+  train_ratio: 0.75
+  val_ratio: 0.25

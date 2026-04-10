@@ -19,7 +19,7 @@ class MaterialRegistry:
 
 def build_material_registry(database_dir: str | Path) -> MaterialRegistry:
     root = Path(database_dir)
-    files = sorted(root.glob("*.csv"))
+    files = sorted(list(root.glob("*.csv")) + list(root.glob("*.xlsx")))
     records = {
         file.stem: MaterialRecord(name=file.stem, filename=file.name)
         for file in files
