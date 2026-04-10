@@ -38,5 +38,7 @@ config.yaml
 !our_work/pretrain/dataset/**
 !our_work/pretrain/model/
 !our_work/pretrain/model/**
+our_work/pretrain/dataset/__pycache__/
+our_work/pretrain/model/__pycache__/
 prework_optogpt
 .worktrees/
