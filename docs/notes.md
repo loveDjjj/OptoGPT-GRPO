@@ -1,27 +1,28 @@
 # 本次修改摘要
 
 ## 需求
-- 为新的 `2-15um` 光谱数据生成与预训练体系整理正式设计。
-- 新体系位于 `our_work/`，与根目录当前强化学习代码解耦。
+- 将已确认的 `our_work` 设计拆成可执行的实现计划。
+- 由于 `data_gen` 与 `pretrain` 是相对独立的子系统，因此分别落两份计划文档。
 
 ## 实际修改
-- `docs/superpowers/specs/2026-04-11-our-work-spectral-pretrain-design.md`
-  - 新增完整设计文档。
-  - 明确 `our_work/_shared / data_gen / pretrain` 三层结构。
-  - 确认数据生成口径：`5-10` 层、每层 `50w`、总计 `300w`。
-  - 确认预训练口径：`Transformers + Trainer + decoder-only + 光谱前缀 projector`。
+- `docs/superpowers/plans/2026-04-11-our-work-data-generation.md`
+  - 新增 `data_gen` 实现计划。
+  - 覆盖 `_shared` 迁移、材料 registry、采样、TMM 模拟、分片与 CLI。
+- `docs/superpowers/plans/2026-04-11-our-work-pretraining.md`
+  - 新增 `pretrain` 实现计划。
+  - 覆盖 tokenizer、collator、自定义 HF 模型、generation/scoring、Trainer 入口。
 - `docs/notes.md`
   - 覆盖为最近一次修改摘要。
 - `docs/logs/2026-04.md`
-  - 追加本次设计记录。
+  - 追加本次计划记录。
 
 ## 说明
-- 本次仅写设计文档，不改业务代码。
-- `our_work/` 的实现阶段将迁移必要底层模块，但不会直接依赖根目录现有 GRPO 路径。
+- 本次仅新增计划文档，不改业务代码。
+- 计划明确把实现拆成 `data_gen` 与 `pretrain` 两条执行线，便于后续分阶段落地。
 
 ## 验证
 - 未验证
 
 ## Git
-- branch: `docs/our-work-design`
-- commit: `git commit -m "docs: add our_work data generation and pretraining design"` 
+- branch: `docs/our-work-plans`
+- commit: `git commit -m "docs: add our_work implementation plans"` 
