@@ -32,5 +32,11 @@ config.yaml
 
 # F. 忽略全部，但保留某个文件
 !data/README.md
+!our_work/pretrain/configs/model/
+!our_work/pretrain/configs/model/**
+!our_work/pretrain/dataset/
+!our_work/pretrain/dataset/**
+!our_work/pretrain/model/
+!our_work/pretrain/model/**
 prework_optogpt
 .worktrees/
