@@ -1,0 +1,14 @@
+data:
+  dataset_dir: our_work/data_gen/outputs/v1_smoke
+  vocab_path: our_work/data_gen/outputs/v1_smoke/vocab/vocab.json
+
+training:
+  output_dir: our_work/pretrain/outputs/base_run
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  num_train_epochs: 1
+  max_steps: 1
+  learning_rate: 5.0e-4
+  logging_steps: 1
+  eval_steps: 1
+  save_steps: 1

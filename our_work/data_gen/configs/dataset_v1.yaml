@@ -11,7 +11,7 @@ data:
 
 tmm:
   wavelength_range_um: [2.0, 15.0]
-  num_points: 32
+  num_points: 1024  # Smoke data keeps the real 2048-dim R+T shape used by pretraining.
   incident_angle: 0.0
   polarization: 0
   tolerance: 0.001
