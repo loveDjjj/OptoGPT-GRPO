@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import our_work.pretrain.eval_outputs as eval_outputs
 from our_work.pretrain.eval_outputs import (
     build_summary_payload,
     create_eval_run_dir,
@@ -162,3 +164,22 @@ def test_create_eval_run_dir_rejects_duplicate_explicit_timestamp(tmp_path: Path
 
     with pytest.raises(FileExistsError):
         create_eval_run_dir(tmp_path, run_name="base_run", timestamp="20260411-120000")
+
+
+def test_create_eval_run_dir_auto_timestamp_retries_with_suffix(monkeypatch, tmp_path: Path) -> None:
+    frozen_now = datetime(2026, 4, 11, 12, 0, 0, 123456)
+
+    class FrozenDatetime:
+        @staticmethod
+        def now() -> datetime:
+            return frozen_now
+
+    monkeypatch.setattr(eval_outputs, "datetime", FrozenDatetime)
+
+    first_run_dir = create_eval_run_dir(tmp_path, run_name="base_run")
+    second_run_dir = create_eval_run_dir(tmp_path, run_name="base_run")
+
+    assert first_run_dir.name == "20260411-120000-123456"
+    assert second_run_dir.name == "20260411-120000-123456-1"
+    assert first_run_dir.exists()
+    assert second_run_dir.exists()
