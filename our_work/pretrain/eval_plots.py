@@ -59,7 +59,11 @@ def plot_metric_histogram(
     xlabel: str,
     output_path: str | Path,
 ) -> None:
-    numeric_values = [float(value) for value in values]
+    numeric_values = []
+    for value in values:
+        numeric_value = float(value)
+        if np.isfinite(numeric_value):
+            numeric_values.append(numeric_value)
     width, height = 900, 520
     left, right, top, bottom = 90, 30, 60, 80
     chart_w = width - left - right
@@ -111,7 +115,14 @@ def plot_metric_histogram(
         max_w, _ = _measure_text(draw, max_text, font)
         draw.text((left + chart_w - max_w, origin_y + 6), max_text, fill="black", font=font)
     else:
-        draw.text((left, top + chart_h / 2), "no values", fill="black", font=font)
+        empty_text = "no finite values to plot"
+        text_w, text_h = _measure_text(draw, empty_text, font)
+        draw.text(
+            (left + (chart_w - text_w) / 2, top + (chart_h - text_h) / 2),
+            empty_text,
+            fill="black",
+            font=font,
+        )
 
     _save_image(image, output_path)
 
@@ -156,14 +167,26 @@ def plot_sample_spectrum(
 
     target_spectrum = np.asarray(row["target_spectrum_rt"], dtype=np.float32).reshape(-1)
     predicted_spectrum = np.asarray(row["predicted_spectrum_rt"], dtype=np.float32).reshape(-1)
+    expected_length = 2 * int(num_points)
+    if target_spectrum.size != expected_length:
+        raise ValueError(
+            f"target_spectrum_rt must contain exactly {expected_length} values; got {target_spectrum.size}"
+        )
+    if predicted_spectrum.size != expected_length:
+        raise ValueError(
+            f"predicted_spectrum_rt must contain exactly {expected_length} values; got {predicted_spectrum.size}"
+        )
     target_r = target_spectrum[:num_points]
     target_t = target_spectrum[num_points : num_points * 2]
     pred_r = predicted_spectrum[:num_points]
     pred_t = predicted_spectrum[num_points : num_points * 2]
 
-    width, height = 1100, 600
-    left, right, top, bottom = 80, 30, 110, 70
-    chart_box = (left, top, width - right, height - bottom)
+    width, height = 1320, 600
+    left, right, top, bottom = 80, 40, 110, 70
+    legend_width = 210
+    chart_box = (left, top, width - right - legend_width, height - bottom)
+    legend_left = width - right - legend_width + 20
+    legend_top = top + 8
 
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
@@ -188,6 +211,23 @@ def plot_sample_spectrum(
         ("pred_T", pred_t, (22, 163, 74)),
     ):
         _draw_series(draw, np.asarray(values, dtype=np.float32), chart_box=chart_box, color=color, label=label, font=font)
+
+    legend_items = [
+        ("target_R", (31, 31, 31)),
+        ("pred_R", (214, 40, 40)),
+        ("target_T", (29, 78, 216)),
+        ("pred_T", (22, 163, 74)),
+    ]
+    draw.rectangle(
+        (width - right - legend_width, top, width - right, top + 120),
+        outline="#1f1f1f",
+        width=1,
+    )
+    draw.text((legend_left, legend_top), "Legend", fill="black", font=font)
+    for index, (legend_label, color) in enumerate(legend_items, start=1):
+        row_top = legend_top + 18 * index
+        draw.rectangle((legend_left, row_top + 2, legend_left + 14, row_top + 16), fill=color, outline=color)
+        draw.text((legend_left + 22, row_top), legend_label, fill="black", font=font)
 
     x_label = "wavelength index"
     label_w, _ = _measure_text(draw, x_label, font)

@@ -41,7 +41,7 @@ def test_plot_metric_histogram_writes_png(tmp_path: Path) -> None:
     output_path = tmp_path / "rmse_hist.png"
 
     plot_metric_histogram(
-        values=[0.1, 0.2, 0.4],
+        values=[0.1, 0.2, float("nan"), float("inf"), float("-inf"), 0.4],
         title="RMSE",
         xlabel="rmse",
         output_path=output_path,
@@ -50,6 +50,25 @@ def test_plot_metric_histogram_writes_png(tmp_path: Path) -> None:
     assert output_path.exists()
     assert output_path.stat().st_size > 0
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_plot_sample_spectrum_rejects_malformed_lengths() -> None:
+    row = {
+        "sample_id": "sample-1",
+        "target_layer_count": 5,
+        "prediction_layer_count": 6,
+        "token_exact_match": False,
+        "spectrum_rmse": 0.2,
+        "target_spectrum_rt": np.linspace(0.1, 0.9, 7).tolist(),
+        "predicted_spectrum_rt": np.linspace(0.2, 0.8, 8).tolist(),
+    }
+
+    try:
+        plot_sample_spectrum(row=row, output_path=Path("unused.png"), num_points=4)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("plot_sample_spectrum should reject malformed spectrum lengths")
 
 
 def test_plot_sample_spectrum_writes_png(tmp_path: Path) -> None:
