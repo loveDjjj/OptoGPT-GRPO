@@ -30,3 +30,7 @@ shards:
 splits:
   train_ratio: 0.9
   val_ratio: 0.1
+
+logging:
+  # 数据生成阶段按 layer bucket 显示 tqdm 进度条。
+  show_progress_bar: true

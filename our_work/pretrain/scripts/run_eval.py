@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -224,13 +225,23 @@ def evaluate_records(
     complex_dtype: str,
     max_new_tokens: int,
     device: torch.device,
+    show_progress: bool = True,
 ) -> list[dict]:
     results: list[dict] = []
     for record in records:
         target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32).reshape(-1)
         _validate_spectrum_length("target_spectrum_rt", target_spectrum, num_points)
     _validate_eval_config(database_path=database_path, complex_dtype=complex_dtype)
-    for record in records:
+    progress = tqdm(
+        records,
+        desc="our_work eval",
+        total=len(records),
+        unit="sample",
+        dynamic_ncols=True,
+        leave=True,
+        disable=not show_progress,
+    )
+    for record in progress:
         target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32).reshape(-1)
         spectra = torch.from_numpy(target_spectrum.reshape(1, -1)).to(device)
         predicted_tokens = run_eval_sample(
@@ -252,6 +263,16 @@ def evaluate_records(
                 complex_dtype=complex_dtype,
             )
         )
+        if hasattr(progress, "set_postfix") and results:
+            latest = results[-1]
+            progress.set_postfix(
+                {
+                    "valid": int(sum(1 for row in results if row["generated_valid"])),
+                    "exact": int(sum(1 for row in results if row["token_exact_match"])),
+                    "last_rmse": latest["spectrum_rmse"],
+                },
+                refresh=False,
+            )
     return results
 
 
@@ -375,6 +396,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--worst-sample-plots", type=int, default=5)
     parser.add_argument("--random-sample-plots", type=int, default=5)
     parser.add_argument("--disable-plots", action="store_true")
+    parser.add_argument("--disable-progress", action="store_true")
     parser.add_argument("--output-json", default=None)
     args = parser.parse_args(argv)
 
@@ -403,6 +425,7 @@ def main(argv: list[str] | None = None) -> dict:
         complex_dtype=args.complex_dtype,
         max_new_tokens=args.max_new_tokens,
         device=device,
+        show_progress=not args.disable_progress,
     )
     metadata = {
         "checkpoint_dir": str(resolved_checkpoint_dir),

@@ -4,6 +4,8 @@ import random
 from pathlib import Path
 from typing import Any
 
+from tqdm.auto import tqdm
+
 from our_work.data_gen.pipeline.shard_writer import write_records_to_parquet, write_split_manifest
 from our_work.data_gen.pipeline.simulator import flatten_rt_spectrum, simulate_structure_batch
 from our_work.data_gen.pipeline.token_vocab import build_token_vocab
@@ -99,14 +101,22 @@ def build_small_dataset(
     train_ratio: float = 1.0,
     val_ratio: float = 0.0,
     seed: int = 42,
+    show_progress: bool = True,
 ) -> dict[str, list[str]]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     vocab = build_token_vocab(material_names, thickness_values_nm)
     all_records: list[dict[str, Any]] = []
-
-    for layer_count in layer_counts:
+    layer_iterable = tqdm(
+        layer_counts,
+        desc="data_gen buckets",
+        unit="bucket",
+        dynamic_ncols=True,
+        leave=True,
+        disable=not show_progress,
+    )
+    for layer_count in layer_iterable:
         structure_token_groups = sample_unique_bucket(
             material_names=material_names,
             thickness_values_nm=thickness_values_nm,
@@ -138,6 +148,17 @@ def build_small_dataset(
                     token_to_id=vocab.token_to_id,
                     spectrum_rt=spectrum_rt,
                 )
+            )
+        if hasattr(layer_iterable, "set_postfix"):
+            valid_count = int(sum(bool(item) for item in ok_mask))
+            layer_iterable.set_postfix(
+                {
+                    "layer_count": int(layer_count),
+                    "generated": int(len(structure_token_groups)),
+                    "valid": valid_count,
+                    "kept": int(len(all_records)),
+                },
+                refresh=False,
             )
 
     split_records = _split_records(

@@ -40,6 +40,7 @@ def main() -> None:
         train_ratio=float(config["splits"]["train_ratio"]),
         val_ratio=float(config["splits"]["val_ratio"]),
         seed=int(config.get("seed", 42)),
+        show_progress=bool(config.get("logging", {}).get("show_progress_bar", True)),
     )
 
 
