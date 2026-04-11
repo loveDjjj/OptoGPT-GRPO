@@ -37,6 +37,22 @@ def test_select_sample_plot_rows_returns_worst_rows_plus_random_rows_without_ove
     assert "e" not in worst_ids + random_ids
 
 
+def test_select_sample_plot_rows_ignores_non_finite_rmse_values() -> None:
+    rows = [
+        {"sample_id": "a", "generated_valid": True, "spectrum_rmse": 0.1},
+        {"sample_id": "b", "generated_valid": True, "spectrum_rmse": float("nan")},
+        {"sample_id": "c", "generated_valid": True, "spectrum_rmse": float("inf")},
+        {"sample_id": "d", "generated_valid": True, "spectrum_rmse": 0.4},
+    ]
+
+    selected = select_sample_plot_rows(rows, worst_count=2, random_count=2, seed=7)
+
+    selected_ids = [row["sample_id"] for bucket in selected.values() for row in bucket]
+    assert "b" not in selected_ids
+    assert "c" not in selected_ids
+    assert set(selected_ids) == {"a", "d"}
+
+
 def test_plot_metric_histogram_writes_png(tmp_path: Path) -> None:
     output_path = tmp_path / "rmse_hist.png"
 

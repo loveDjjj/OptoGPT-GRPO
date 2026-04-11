@@ -37,7 +37,9 @@ def select_sample_plot_rows(
     valid_rows = [
         row
         for row in rows
-        if row.get("generated_valid") and row.get("spectrum_rmse") is not None
+        if row.get("generated_valid")
+        and row.get("spectrum_rmse") is not None
+        and np.isfinite(float(row.get("spectrum_rmse")))
     ]
     worst_count = max(0, int(worst_count))
     random_count = max(0, int(random_count))
@@ -133,8 +135,6 @@ def _draw_series(
     *,
     chart_box: tuple[int, int, int, int],
     color: tuple[int, int, int],
-    label: str,
-    font: ImageFont.ImageFont,
 ) -> None:
     left, top, right, bottom = chart_box
     width = right - left
@@ -152,9 +152,6 @@ def _draw_series(
     else:
         x, y = points[0]
         draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=color)
-    text_w, text_h = _measure_text(draw, label, font)
-    draw.rectangle((left + 8, top + 8, left + 20, top + 20), fill=color)
-    draw.text((left + 28, top + 6), label, fill="black", font=font)
 
 
 def plot_sample_spectrum(
@@ -210,7 +207,7 @@ def plot_sample_spectrum(
         ("target_T", target_t, (29, 78, 216)),
         ("pred_T", pred_t, (22, 163, 74)),
     ):
-        _draw_series(draw, np.asarray(values, dtype=np.float32), chart_box=chart_box, color=color, label=label, font=font)
+        _draw_series(draw, np.asarray(values, dtype=np.float32), chart_box=chart_box, color=color)
 
     legend_items = [
         ("target_R", (31, 31, 31)),
