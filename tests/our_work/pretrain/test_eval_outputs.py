@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -30,6 +31,30 @@ def test_write_results_jsonl_writes_one_json_object_per_line(tmp_path: Path) -> 
     assert len(lines) == 2
     assert json.loads(lines[0])["sample_id"] == "a"
     assert json.loads(lines[1])["sample_id"] == "b"
+
+
+def test_write_results_jsonl_normalizes_non_finite_values(tmp_path: Path) -> None:
+    rows = [
+        {
+            "sample_id": "a",
+            "target_layer_count": 5,
+            "generated_valid": True,
+            "spectrum_rmse": np.nan,
+            "spectrum_mae": np.inf,
+            "extra": -np.inf,
+        }
+    ]
+    output_path = tmp_path / "results.jsonl"
+
+    write_results_jsonl(rows, output_path)
+
+    line = output_path.read_text(encoding="utf-8").strip()
+    payload = json.loads(line)
+    assert payload["spectrum_rmse"] is None
+    assert payload["spectrum_mae"] is None
+    assert payload["extra"] is None
+    assert "NaN" not in line
+    assert "Infinity" not in line
 
 
 def test_build_summary_payload_includes_global_and_per_layer_metrics() -> None:
@@ -83,6 +108,41 @@ def test_build_summary_payload_includes_global_and_per_layer_metrics() -> None:
     assert payload["skipped_artifacts"]["rmse_hist"] == "not enough valid rows"
 
 
+def test_build_summary_payload_normalizes_non_finite_metrics() -> None:
+    rows = [
+        {
+            "sample_id": "a",
+            "target_layer_count": 5,
+            "generated_valid": True,
+            "token_exact_match": False,
+            "spectrum_rmse": np.nan,
+            "spectrum_mae": np.inf,
+        },
+        {
+            "sample_id": "b",
+            "target_layer_count": 5,
+            "generated_valid": False,
+            "token_exact_match": False,
+            "spectrum_rmse": None,
+            "spectrum_mae": None,
+        },
+    ]
+
+    payload = build_summary_payload(
+        rows,
+        {"split": "val", "threshold": np.nan},
+        {"summary": "summary.json"},
+        {"rmse_hist": "not enough valid rows"},
+    )
+
+    assert payload["metadata"]["threshold"] is None
+    assert payload["global_metrics"]["valid_generation_count"] == 1
+    assert payload["global_metrics"]["mean_spectrum_rmse"] is None
+    assert payload["global_metrics"]["mean_spectrum_mae"] is None
+    assert payload["per_target_layer_count"]["5"]["mean_spectrum_rmse"] is None
+    assert payload["per_target_layer_count"]["5"]["mean_spectrum_mae"] is None
+
+
 def test_create_eval_run_dir_creates_timestamped_subdirectories(tmp_path: Path) -> None:
     run_dir = create_eval_run_dir(tmp_path, run_name="base_run", timestamp="20260411-120000")
 
@@ -95,3 +155,10 @@ def test_create_eval_run_dir_creates_timestamped_subdirectories(tmp_path: Path) 
 def test_create_eval_run_dir_requires_keyword_run_name(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         create_eval_run_dir(tmp_path, "base_run", timestamp="20260411-120000")
+
+
+def test_create_eval_run_dir_rejects_duplicate_explicit_timestamp(tmp_path: Path) -> None:
+    create_eval_run_dir(tmp_path, run_name="base_run", timestamp="20260411-120000")
+
+    with pytest.raises(FileExistsError):
+        create_eval_run_dir(tmp_path, run_name="base_run", timestamp="20260411-120000")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -8,11 +9,26 @@ import numpy as np
 
 
 def create_eval_run_dir(output_root: str | Path, *, run_name: str, timestamp: str | None = None) -> Path:
-    stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run_dir = Path(output_root) / run_name / "eval_runs" / stamp
-    (run_dir / "plots").mkdir(parents=True, exist_ok=True)
-    (run_dir / "samples").mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=False)
+    (run_dir / "plots").mkdir()
+    (run_dir / "samples").mkdir()
     return run_dir
+
+
+def _json_safe_value(value):
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
 
 
 def write_results_jsonl(rows: list[dict], output_path: str | Path) -> None:
@@ -20,12 +36,20 @@ def write_results_jsonl(rows: list[dict], output_path: str | Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=True))
+            handle.write(json.dumps(_json_safe_value(row), ensure_ascii=True))
             handle.write("\n")
 
 
 def _mean_or_none(values: list[float | int | None]) -> float | None:
-    clean_values = [value for value in values if value is not None]
+    clean_values = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        clean_values.append(value)
     if not clean_values:
         return None
     return float(np.mean(clean_values))
@@ -59,10 +83,11 @@ def build_summary_payload(
         layer_rows = [row for row in rows if int(row["target_layer_count"]) == layer_count]
         per_target_layer_count[str(layer_count)] = _build_metrics(layer_rows)
 
-    return {
+    payload = {
         "metadata": metadata,
         "global_metrics": _build_metrics(rows),
         "per_target_layer_count": per_target_layer_count,
         "artifacts": artifacts,
         "skipped_artifacts": skipped_artifacts,
     }
+    return _json_safe_value(payload)
