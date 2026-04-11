@@ -11,13 +11,19 @@ import numpy as np
 def create_eval_run_dir(output_root: str | Path, *, run_name: str, timestamp: str | None = None) -> Path:
     base_stamp = timestamp or datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run_root = Path(output_root) / run_name / "eval_runs"
-    run_dir = run_root / base_stamp
-    if timestamp is None:
+    if timestamp is not None:
+        run_dir = run_root / base_stamp
+        run_dir.mkdir(parents=True, exist_ok=False)
+    else:
         suffix = 0
-        while run_dir.exists():
-            suffix += 1
-            run_dir = run_root / f"{base_stamp}-{suffix}"
-    run_dir.mkdir(parents=True, exist_ok=False)
+        while True:
+            stamp = base_stamp if suffix == 0 else f"{base_stamp}-{suffix}"
+            run_dir = run_root / stamp
+            try:
+                run_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                suffix += 1
     (run_dir / "plots").mkdir()
     (run_dir / "samples").mkdir()
     return run_dir

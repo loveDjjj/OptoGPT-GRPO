@@ -168,18 +168,28 @@ def test_create_eval_run_dir_rejects_duplicate_explicit_timestamp(tmp_path: Path
 
 def test_create_eval_run_dir_auto_timestamp_retries_with_suffix(monkeypatch, tmp_path: Path) -> None:
     frozen_now = datetime(2026, 4, 11, 12, 0, 0, 123456)
+    original_mkdir = Path.mkdir
+    failed_once = False
 
     class FrozenDatetime:
         @staticmethod
         def now() -> datetime:
             return frozen_now
 
+    def fake_mkdir(self: Path, *args, **kwargs):
+        nonlocal failed_once
+        if self == tmp_path / "base_run" / "eval_runs" / "20260411-120000-123456" and not failed_once:
+            failed_once = True
+            raise FileExistsError("simulated race on base timestamp")
+        return original_mkdir(self, *args, **kwargs)
+
     monkeypatch.setattr(eval_outputs, "datetime", FrozenDatetime)
+    monkeypatch.setattr(eval_outputs.Path, "mkdir", fake_mkdir)
 
-    first_run_dir = create_eval_run_dir(tmp_path, run_name="base_run")
-    second_run_dir = create_eval_run_dir(tmp_path, run_name="base_run")
+    run_dir = create_eval_run_dir(tmp_path, run_name="base_run")
 
-    assert first_run_dir.name == "20260411-120000-123456"
-    assert second_run_dir.name == "20260411-120000-123456-1"
-    assert first_run_dir.exists()
-    assert second_run_dir.exists()
+    assert run_dir.name == "20260411-120000-123456-1"
+    assert run_dir.exists()
+    assert not (tmp_path / "base_run" / "eval_runs" / "20260411-120000-123456").exists()
+    assert (run_dir / "plots").exists()
+    assert (run_dir / "samples").exists()
