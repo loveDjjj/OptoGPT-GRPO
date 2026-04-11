@@ -2,8 +2,10 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from our_work.data_gen.pipeline.build_dataset import build_small_dataset
+from our_work.data_gen.scripts.run_build_dataset import resolve_thickness_values_nm
 
 
 def test_build_small_dataset_writes_manifest_and_shard(tmp_path: Path):
@@ -27,3 +29,51 @@ def test_build_small_dataset_writes_manifest_and_shard(tmp_path: Path):
     assert (output_dir / "shards" / "shard-00000.parquet").exists()
     payload = json.loads((output_dir / "splits" / "split_manifest.json").read_text(encoding="utf-8"))
     assert payload["train"] == ["shard-00000.parquet"]
+
+
+def test_resolve_thickness_values_nm_expands_inclusive_range_config():
+    values = resolve_thickness_values_nm(
+        {
+            "thickness_range_nm": {
+                "min": 10,
+                "max": 500,
+                "step": 10,
+            }
+        }
+    )
+
+    assert values[:3] == [10, 20, 30]
+    assert values[-3:] == [480, 490, 500]
+    assert len(values) == 50
+
+
+def test_resolve_thickness_values_nm_rejects_ambiguous_or_invalid_range():
+    with pytest.raises(ValueError, match="thickness_range_nm"):
+        resolve_thickness_values_nm(
+            {
+                "thickness_values_nm": [10, 20],
+                "thickness_range_nm": {"min": 10, "max": 20, "step": 10},
+            }
+        )
+
+    with pytest.raises(ValueError, match="step"):
+        resolve_thickness_values_nm(
+            {
+                "thickness_range_nm": {
+                    "min": 10,
+                    "max": 500,
+                    "step": 0,
+                }
+            }
+        )
+
+    with pytest.raises(ValueError, match="divisible"):
+        resolve_thickness_values_nm(
+            {
+                "thickness_range_nm": {
+                    "min": 10,
+                    "max": 495,
+                    "step": 10,
+                }
+            }
+        )

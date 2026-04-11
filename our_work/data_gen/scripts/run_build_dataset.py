@@ -14,6 +14,33 @@ from our_work.data_gen.pipeline.material_registry import build_material_registry
 from our_work._shared.utils.seed import set_global_seed
 
 
+def resolve_thickness_values_nm(data_config: dict) -> list[int]:
+    explicit_values = data_config.get("thickness_values_nm")
+    range_config = data_config.get("thickness_range_nm")
+
+    if explicit_values is not None and range_config is not None:
+        raise ValueError("data.thickness_values_nm and data.thickness_range_nm cannot be set at the same time")
+
+    if explicit_values is not None:
+        return [int(value) for value in explicit_values]
+
+    if range_config is None:
+        raise KeyError("data.thickness_range_nm is required when data.thickness_values_nm is not provided")
+
+    min_value = int(range_config["min"])
+    max_value = int(range_config["max"])
+    step_value = int(range_config["step"])
+
+    if step_value <= 0:
+        raise ValueError("data.thickness_range_nm.step must be a positive integer")
+    if min_value > max_value:
+        raise ValueError("data.thickness_range_nm.min must be less than or equal to max")
+    if (max_value - min_value) % step_value != 0:
+        raise ValueError("data.thickness_range_nm max-min must be divisible by step")
+
+    return list(range(min_value, max_value + step_value, step_value))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a small our_work spectral dataset.")
     parser.add_argument("--config", required=True, help="Path to the dataset YAML config.")
@@ -27,7 +54,7 @@ def main() -> None:
         output_dir=config["paths"]["output_dir"],
         database_path=config["paths"]["database_dir"],
         material_names=registry.material_names,
-        thickness_values_nm=[int(value) for value in config["data"]["thickness_values_nm"]],
+        thickness_values_nm=resolve_thickness_values_nm(config["data"]),
         layer_counts=[int(value) for value in config["data"]["layer_counts"]],
         samples_per_bucket=int(config["data"]["samples_per_bucket"]),
         num_points=int(config["tmm"]["num_points"]),

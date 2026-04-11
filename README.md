@@ -190,6 +190,7 @@ torch 2.x.x cuda True
   - `paths.output_dir: outputs/our_work/data_gen/v1`
   - `data.layer_counts: [5, 6, 7, 8, 9, 10]`
   - `data.samples_per_bucket: 500000`
+  - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
   - `tmm.num_points: 1024`
 - `base_train.yaml`
   - `data.dataset_dir: outputs/our_work/data_gen/v1`

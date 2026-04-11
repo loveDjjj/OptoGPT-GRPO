@@ -1,45 +1,41 @@
 # 本次修改摘要
 
 ## 需求
-- 给 `our_work` 补一份可直接用于服务器部署与运行的 README 指南。
-- 检查 `our_work` 代码里长耗时阶段的进度反馈，给缺失的地方补上进度条。
+- 把 `our_work/data_gen/configs/dataset_v1.yaml` 的厚度配置从显式列表改成区间描述。
+- 默认厚度规则改为 `10nm-500nm`，步长 `10nm`，并保持代码对旧列表写法的兼容。
 
 ## 实际修改
-- `README.md`
-  - 新增 `our_work 服务器部署与运行` 章节。
-  - 覆盖必须同步的目录、依赖安装、关键配置约束、从零部署步骤、只评测已有 checkpoint 的步骤、常见报错与每一步的终端输出/产物说明。
-- `our_work/data_gen/pipeline/build_dataset.py`
-  - 新增按 layer bucket 显示的 `tqdm` 进度条。
-  - 在进度条 postfix 中显示当前层数、生成样本数、有效样本数和累计保留条数。
 - `our_work/data_gen/scripts/run_build_dataset.py`
-  - 新增从 YAML `logging.show_progress_bar` 读取数据生成进度条开关。
+  - 新增 `resolve_thickness_values_nm(...)`。
+  - 支持两种配置格式：
+    - `data.thickness_values_nm: [...]`
+    - `data.thickness_range_nm: {min, max, step}`
+  - 新增对冲突配置、非法步长、非法范围的显式校验。
 - `our_work/data_gen/configs/dataset_v1.yaml`
-  - 新增 `logging.show_progress_bar: true` 配置项。
-- `our_work/pretrain/scripts/run_eval.py`
-  - 新增按样本数显示的评测 `tqdm` 进度条。
-  - 新增 `--disable-progress` 选项。
-  - 在进度条 postfix 中显示当前有效生成数、精确匹配数与最近一个样本的 RMSE。
+  - 删除 `thickness_values_nm: [10, 20, 30, 40, 50]`
+  - 改为：
+    - `thickness_range_nm.min: 10`
+    - `thickness_range_nm.max: 500`
+    - `thickness_range_nm.step: 10`
+- `tests/our_work/data_gen/test_build_dataset.py`
+  - 新增区间配置展开测试。
+  - 新增冲突配置/非法步长/非法范围测试。
+- `README.md`
+  - 在 `our_work` 默认配置说明里补充 `thickness_range_nm: {min: 10, max: 500, step: 10}`。
 - `docs/notes.md`
-  - 覆盖为本次 README 与进度条修改摘要。
+  - 覆盖为本次修改摘要。
 - `docs/logs/2026-04.md`
   - 追加本次记录。
 
 ## 说明
-- `run_pretrain.py` 训练阶段本身依赖 `transformers.Trainer`，已有默认训练进度条，因此本次未重复包一层。
-- 本次主要补齐的是数据生成和独立评测这两条此前没有显式进度反馈的长耗时主循环。
-- `our_work/_shared/database/` 当前仍是未跟踪目录，本次未修改。
-- `.tmp_pytest` 目录仍有本机权限异常，本次未清理。
+- pipeline 层仍然只接收 `list[int]` 的厚度值，本次只在配置入口层增加区间展开逻辑，改动范围最小。
+- 旧的 `thickness_values_nm` 写法仍可继续使用，但不能和 `thickness_range_nm` 同时出现。
 
 ## 验证
-- `python -c "import tqdm; print(tqdm.__version__)"`
-  - 结果：通过
-- `python -m compileall README.md our_work tests/our_work`
-  - 结果：通过
-- 内联 smoke：
-  - 调用 `build_small_dataset(..., show_progress=False)` 生成临时数据集
-  - 检查 `splits/split_manifest.json` 与 `vocab/vocab.json`
-  - 结果：通过
+- `python -m compileall our_work/data_gen/scripts/run_build_dataset.py tests/our_work/data_gen/test_build_dataset.py`
+- `python -c "from pathlib import Path; import yaml; from our_work.data_gen.scripts.run_build_dataset import resolve_thickness_values_nm; cfg=yaml.safe_load(Path('our_work/data_gen/configs/dataset_v1.yaml').read_text(encoding='utf-8')); values=resolve_thickness_values_nm(cfg['data']); assert values[0]==10 and values[-1]==500 and len(values)==50; assert resolve_thickness_values_nm({'thickness_values_nm':[10,20,30]})==[10,20,30]; print(values[:5], values[-5:], len(values))"`
+- 结果：通过
 
 ## Git
-- branch: `docs/our-work-server-guide`
+- branch: `fix/our-work-thickness-range`
 - commit: pending

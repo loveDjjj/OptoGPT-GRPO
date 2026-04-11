@@ -11,7 +11,11 @@ data:
   layer_counts: [5, 6, 7, 8, 9, 10]
   # 每个 bucket 默认 50w，总计约 300w 条结构-光谱样本。
   samples_per_bucket: 500000
-  thickness_values_nm: [10, 20, 30, 40, 50]
+  # 厚度离散规则：10nm 到 500nm，步长 10nm，包含两端点。
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
 
 tmm:
   wavelength_range_um: [2.0, 15.0]
