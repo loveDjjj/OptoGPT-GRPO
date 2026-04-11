@@ -191,6 +191,10 @@ torch 2.x.x cuda True
   - `data.layer_counts: [5, 6, 7, 8, 9, 10]`
   - `data.samples_per_bucket: 500000`
   - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
+  - `sampling.device: auto`
+  - `sampling.batch_size: 65536`
+  - `sampling.max_duplicate_retry: 1000`
+  - `tmm.batch_size: 2048`
   - `tmm.num_points: 1024`
 - `base_train.yaml`
   - `data.dataset_dir: outputs/our_work/data_gen/v1`
@@ -284,7 +288,7 @@ python our_work/data_gen/scripts/run_build_dataset.py --config our_work/data_gen
 典型终端输出：
 
 ```text
-data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_count=5, generated=500000, valid=..., kept=...]
+data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_count=5, bucket_kept=98304, bucket_target=500000, sample_batch=65536, tmm_batch=2048, duplicates_skipped=..., valid_kept=...]
 ```
 
 该步骤完成后应出现：
@@ -292,6 +296,12 @@ data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_cou
 - `outputs/our_work/data_gen/v1/shards/shard-00000.parquet`
 - `outputs/our_work/data_gen/v1/splits/split_manifest.json`
 - `outputs/our_work/data_gen/v1/vocab/vocab.json`
+
+说明：
+
+- 结构候选现在按 `sampling.batch_size` 在 GPU/CPU 上分块生成。
+- TMM 光谱计算按 `tmm.batch_size` 分批执行，不会再把整 bucket 一次性送进显存/内存。
+- bucket 内仍然保持全局严格唯一；重复结构会被丢弃并自动补采。
 
 你可以检查：
 

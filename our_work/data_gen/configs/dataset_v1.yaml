@@ -17,6 +17,14 @@ data:
     max: 500
     step: 10
 
+sampling:
+  # 候选结构采样设备；`auto` 会在有 CUDA 时优先使用 GPU。
+  device: auto
+  # 单次 GPU 采样的候选结构数量。
+  batch_size: 65536
+  # 若连续多轮补采仍几乎全部重复，达到该上限后直接报错。
+  max_duplicate_retry: 1000
+
 tmm:
   wavelength_range_um: [2.0, 15.0]
   # 1024 个波长点会生成 2048 维的 [R..., T...] 输入；若修改这里，训练模型的
@@ -26,6 +34,8 @@ tmm:
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
+  # 单次送入 TMM 的结构数量；正式生成时按 chunk 分批跑，避免整 bucket 一次性占满显存/内存。
+  batch_size: 2048
 
 shards:
   # 正式生成默认每 5w 条写一个 parquet shard，便于服务器分片搬运与读取。

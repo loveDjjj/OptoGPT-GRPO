@@ -41,6 +41,20 @@ def resolve_thickness_values_nm(data_config: dict) -> list[int]:
     return list(range(min_value, max_value + step_value, step_value))
 
 
+def resolve_data_gen_runtime_config(config: dict) -> dict:
+    data_config = config["data"]
+    sampling_config = config.get("sampling", {})
+    tmm_config = config["tmm"]
+
+    return {
+        "thickness_values_nm": resolve_thickness_values_nm(data_config),
+        "sampling_device": str(sampling_config.get("device", "auto")),
+        "sampling_batch_size": int(sampling_config.get("batch_size", 65536)),
+        "max_duplicate_retry": int(sampling_config.get("max_duplicate_retry", 1000)),
+        "tmm_batch_size": int(tmm_config.get("batch_size", 2048)),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a small our_work spectral dataset.")
     parser.add_argument("--config", required=True, help="Path to the dataset YAML config.")
@@ -48,15 +62,20 @@ def main() -> None:
 
     config_path = resolve_repo_path(args.config, project_root=PROJECT_ROOT)
     config = load_yaml_config(config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
+    runtime = resolve_data_gen_runtime_config(config)
     set_global_seed(int(config.get("seed", 42)))
     registry = build_material_registry(config["paths"]["database_dir"])
     build_small_dataset(
         output_dir=config["paths"]["output_dir"],
         database_path=config["paths"]["database_dir"],
         material_names=registry.material_names,
-        thickness_values_nm=resolve_thickness_values_nm(config["data"]),
+        thickness_values_nm=runtime["thickness_values_nm"],
         layer_counts=[int(value) for value in config["data"]["layer_counts"]],
         samples_per_bucket=int(config["data"]["samples_per_bucket"]),
+        sampling_batch_size=runtime["sampling_batch_size"],
+        tmm_batch_size=runtime["tmm_batch_size"],
+        max_duplicate_retry=runtime["max_duplicate_retry"],
+        sampling_device=runtime["sampling_device"],
         num_points=int(config["tmm"]["num_points"]),
         wavelength_range_um=tuple(config["tmm"]["wavelength_range_um"]),
         incident_angle=float(config["tmm"].get("incident_angle", 0.0)),

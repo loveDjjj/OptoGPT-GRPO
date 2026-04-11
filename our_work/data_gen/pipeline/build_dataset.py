@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 from our_work.data_gen.pipeline.shard_writer import write_records_to_parquet, write_split_manifest
 from our_work.data_gen.pipeline.simulator import flatten_rt_spectrum, simulate_structure_batch
 from our_work.data_gen.pipeline.token_vocab import build_token_vocab
-from our_work.data_gen.pipeline.sampler import sample_unique_bucket
+from our_work.data_gen.pipeline.sampler import sample_structure_token_batch
 
 
 def _serializable_record(
@@ -91,6 +91,10 @@ def build_small_dataset(
     thickness_values_nm: list[int],
     layer_counts: list[int],
     samples_per_bucket: int,
+    sampling_batch_size: int | None = None,
+    tmm_batch_size: int | None = None,
+    max_duplicate_retry: int | None = None,
+    sampling_device: str = "auto",
     num_points: int,
     wavelength_range_um: tuple[float, float],
     incident_angle: float = 0.0,
@@ -108,6 +112,17 @@ def build_small_dataset(
 
     vocab = build_token_vocab(material_names, thickness_values_nm)
     all_records: list[dict[str, Any]] = []
+    sampling_batch_size = int(sampling_batch_size or samples_per_bucket)
+    tmm_batch_size = int(tmm_batch_size or sampling_batch_size)
+    max_duplicate_retry = int(max_duplicate_retry or 1000)
+
+    if sampling_batch_size <= 0:
+        raise ValueError("sampling_batch_size must be a positive integer")
+    if tmm_batch_size <= 0:
+        raise ValueError("tmm_batch_size must be a positive integer")
+    if max_duplicate_retry <= 0:
+        raise ValueError("max_duplicate_retry must be a positive integer")
+
     layer_iterable = tqdm(
         layer_counts,
         desc="data_gen buckets",
@@ -117,45 +132,100 @@ def build_small_dataset(
         disable=not show_progress,
     )
     for layer_count in layer_iterable:
-        structure_token_groups = sample_unique_bucket(
-            material_names=material_names,
-            thickness_values_nm=thickness_values_nm,
-            layer_count=layer_count,
-            target_count=samples_per_bucket,
-            rng_seed=seed + layer_count,
-        )
-        _, reflections, transmissions, ok_mask = simulate_structure_batch(
-            structure_token_groups,
-            database_path=database_path,
-            wavelength_range_um=wavelength_range_um,
-            num_points=num_points,
-            incident_angle=incident_angle,
-            polarization=polarization,
-            tolerance=tolerance,
-            complex_dtype=complex_dtype,
-        )
-        for index, (tokens, reflection, transmission, ok) in enumerate(
-            zip(structure_token_groups, reflections, transmissions, ok_mask)
-        ):
-            if not bool(ok):
-                continue
-            spectrum_rt = flatten_rt_spectrum(reflection, transmission).astype("float32").tolist()
-            all_records.append(
-                _serializable_record(
-                    sample_id=f"{layer_count}-{index}",
-                    layer_count=layer_count,
-                    structure_tokens=tokens,
-                    token_to_id=vocab.token_to_id,
-                    spectrum_rt=spectrum_rt,
-                )
+        seen_structures: set[tuple[str, ...]] = set()
+        bucket_records: list[dict[str, Any]] = []
+        stagnant_rounds = 0
+        sample_round = 0
+        duplicate_total = 0
+        candidate_total = 0
+        valid_total = 0
+
+        while len(bucket_records) < samples_per_bucket:
+            sample_round += 1
+            candidate_groups = sample_structure_token_batch(
+                material_names=material_names,
+                thickness_values_nm=thickness_values_nm,
+                layer_count=layer_count,
+                batch_size=sampling_batch_size,
+                device=sampling_device,
+                rng_seed=seed + layer_count + sample_round,
             )
+            candidate_total += len(candidate_groups)
+
+            unique_groups: list[list[str]] = []
+            duplicate_count = 0
+            for tokens in candidate_groups:
+                key = tuple(tokens)
+                if key in seen_structures:
+                    duplicate_count += 1
+                    continue
+                seen_structures.add(key)
+                unique_groups.append(tokens)
+            duplicate_total += duplicate_count
+
+            previous_kept = len(bucket_records)
+            for start in range(0, len(unique_groups), tmm_batch_size):
+                chunk_groups = unique_groups[start : start + tmm_batch_size]
+                if not chunk_groups:
+                    continue
+                _, reflections, transmissions, ok_mask = simulate_structure_batch(
+                    chunk_groups,
+                    database_path=database_path,
+                    wavelength_range_um=wavelength_range_um,
+                    num_points=num_points,
+                    incident_angle=incident_angle,
+                    polarization=polarization,
+                    tolerance=tolerance,
+                    complex_dtype=complex_dtype,
+                )
+                for tokens, reflection, transmission, ok in zip(chunk_groups, reflections, transmissions, ok_mask):
+                    if not bool(ok):
+                        continue
+                    valid_total += 1
+                    spectrum_rt = flatten_rt_spectrum(reflection, transmission).astype("float32").tolist()
+                    bucket_records.append(
+                        _serializable_record(
+                            sample_id=f"{layer_count}-{len(bucket_records)}",
+                            layer_count=layer_count,
+                            structure_tokens=tokens,
+                            token_to_id=vocab.token_to_id,
+                            spectrum_rt=spectrum_rt,
+                        )
+                    )
+                    if len(bucket_records) >= samples_per_bucket:
+                        break
+                if hasattr(layer_iterable, "set_postfix"):
+                    layer_iterable.set_postfix(
+                        {
+                            "layer_count": int(layer_count),
+                            "bucket_kept": int(len(bucket_records)),
+                            "bucket_target": int(samples_per_bucket),
+                            "sample_batch": int(sampling_batch_size),
+                            "tmm_batch": int(len(chunk_groups)),
+                            "duplicates_skipped": int(duplicate_total),
+                            "valid_kept": int(valid_total),
+                        },
+                        refresh=False,
+                    )
+                if len(bucket_records) >= samples_per_bucket:
+                    break
+
+            if len(bucket_records) == previous_kept:
+                stagnant_rounds += 1
+            else:
+                stagnant_rounds = 0
+            if stagnant_rounds > max_duplicate_retry:
+                raise RuntimeError(
+                    f"Unable to fill bucket for layer_count={layer_count} after {max_duplicate_retry} stagnant rounds; "
+                    f"kept {len(bucket_records)} / {samples_per_bucket}."
+                )
+        all_records.extend(bucket_records[:samples_per_bucket])
         if hasattr(layer_iterable, "set_postfix"):
-            valid_count = int(sum(bool(item) for item in ok_mask))
             layer_iterable.set_postfix(
                 {
                     "layer_count": int(layer_count),
-                    "generated": int(len(structure_token_groups)),
-                    "valid": valid_count,
+                    "generated": int(candidate_total),
+                    "valid": int(valid_total),
                     "kept": int(len(all_records)),
                 },
                 refresh=False,
