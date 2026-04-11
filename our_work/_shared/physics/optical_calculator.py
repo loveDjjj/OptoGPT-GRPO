@@ -82,29 +82,33 @@ def load_material_data(filename, database_path=None):
         suffix = os.path.splitext(file_path)[1].lower()
         if suffix == ".csv":
             df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path)
 
-        wl_col = _find_column(df.columns, ["wl", "wavelength", "wavelength_um", "lambda", "um"])
-        nm_col = _find_column(df.columns, ["nm", "wavelength_nm"])
-        n_col = _find_column(df.columns, ["n", "n_real", "real_n"])
-        k_col = _find_column(df.columns, ["k", "n_imag", "imag_k", "imag_n"])
+            wl_col = _find_column(df.columns, ["wl", "wavelength", "wavelength_um", "lambda", "um"])
+            nm_col = _find_column(df.columns, ["nm", "wavelength_nm"])
+            n_col = _find_column(df.columns, ["n", "n_real", "real_n"])
+            k_col = _find_column(df.columns, ["k", "n_imag", "imag_k", "imag_n"])
 
-        if wl_col is not None and n_col is not None and k_col is not None:
-            wavelengths = df[wl_col].to_numpy(dtype=np.float64)
-            n_real = df[n_col].to_numpy(dtype=np.float64)
-            n_imag = df[k_col].to_numpy(dtype=np.float64)
-        elif nm_col is not None and n_col is not None and k_col is not None:
-            wavelengths = df[nm_col].to_numpy(dtype=np.float64) / 1000.0
-            n_real = df[n_col].to_numpy(dtype=np.float64)
-            n_imag = df[k_col].to_numpy(dtype=np.float64)
+            if wl_col is not None and n_col is not None and k_col is not None:
+                wavelengths = df[wl_col].to_numpy(dtype=np.float64)
+                n_real = df[n_col].to_numpy(dtype=np.float64)
+                n_imag = df[k_col].to_numpy(dtype=np.float64)
+            elif nm_col is not None and n_col is not None and k_col is not None:
+                wavelengths = df[nm_col].to_numpy(dtype=np.float64) / 1000.0
+                n_real = df[n_col].to_numpy(dtype=np.float64)
+                n_imag = df[k_col].to_numpy(dtype=np.float64)
+            else:
+                # Headerless CSV fallback: treat the first three columns as um / n / k.
+                df = pd.read_csv(file_path, header=None)
+                wavelengths = df.iloc[:, 0].to_numpy(dtype=np.float64)
+                n_real = df.iloc[:, 1].to_numpy(dtype=np.float64)
+                n_imag = df.iloc[:, 2].to_numpy(dtype=np.float64)
         else:
+            # our_work/database *.xlsx files are headerless three-column tables:
+            # wavelength in um, n, k.
+            df = pd.read_excel(file_path, header=None)
             wavelengths = df.iloc[:, 0].to_numpy(dtype=np.float64)
             n_real = df.iloc[:, 1].to_numpy(dtype=np.float64)
             n_imag = df.iloc[:, 2].to_numpy(dtype=np.float64)
-            first_col_name = str(df.columns[0]).strip().lower()
-            if "nm" in first_col_name or np.nanmax(wavelengths) > 50.0:
-                wavelengths = wavelengths / 1000.0
 
         return wavelengths, n_real, n_imag
     except Exception as e:
