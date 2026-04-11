@@ -1,25 +1,32 @@
 seed: 42
 
 paths:
-  database_dir: ../../database
-  output_dir: our_work/data_gen/outputs/v1_smoke
+  # 相对路径会由入口脚本固定解析到仓库根目录，避免依赖启动时的 cwd。
+  database_dir: database
+  # 服务器默认输出到仓库根下的统一 outputs 目录；如需落到数据盘，可改绝对路径。
+  output_dir: outputs/our_work/data_gen/v1
 
 data:
-  layer_counts: [5, 6]
-  samples_per_bucket: 4
+  # 正式数据默认覆盖 5-10 层，共 6 个 bucket。
+  layer_counts: [5, 6, 7, 8, 9, 10]
+  # 每个 bucket 默认 50w，总计约 300w 条结构-光谱样本。
+  samples_per_bucket: 500000
   thickness_values_nm: [10, 20, 30, 40, 50]
 
 tmm:
   wavelength_range_um: [2.0, 15.0]
-  num_points: 1024  # Smoke data keeps the real 2048-dim R+T shape used by pretraining.
+  # 1024 个波长点会生成 2048 维的 [R..., T...] 输入；若修改这里，训练模型的
+  # model.spectrum_dim 必须同步改为 2 * num_points。
+  num_points: 1024
   incident_angle: 0.0
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
 
 shards:
-  records_per_shard: 16
+  # 正式生成默认每 5w 条写一个 parquet shard，便于服务器分片搬运与读取。
+  records_per_shard: 50000
 
 splits:
-  train_ratio: 0.75
-  val_ratio: 0.25
+  train_ratio: 0.9
+  val_ratio: 0.1

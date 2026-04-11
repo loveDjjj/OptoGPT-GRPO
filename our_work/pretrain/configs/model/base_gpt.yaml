@@ -1,4 +1,5 @@
 model:
+  # 必须与 data_gen 侧的 2 * tmm.num_points 保持一致；默认 1024 点 => 2048 维 [R..., T...]。
   spectrum_dim: 2048
   prefix_length: 8
   n_positions: 32

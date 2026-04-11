@@ -17,7 +17,7 @@ os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 import transformers.trainer as trainer_module
 from transformers import Trainer, TrainingArguments
 
-from our_work._shared.io.config import load_yaml_config
+from our_work._shared.io.config import load_yaml_config, resolve_repo_path
 from our_work.pretrain.dataset.collator import SpectralCausalCollator
 from our_work.pretrain.dataset.hf_dataset import load_split_records
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
@@ -105,14 +105,30 @@ def _load_token_list(vocab_path: str | Path) -> list[str]:
     raise ValueError(f"Unsupported vocab format: {vocab_path}")
 
 
+def validate_record_spectrum_dim(records: list[dict], *, split_name: str, spectrum_dim: int) -> None:
+    if not records:
+        return
+
+    first_record = records[0]
+    actual_dim = len(first_record.get("spectrum_rt", []))
+    if actual_dim != int(spectrum_dim):
+        raise ValueError(
+            f"{split_name} split spectrum_dim mismatch: model expects {int(spectrum_dim)} values "
+            f"but dataset rows contain {int(actual_dim)}. "
+            "Keep model.spectrum_dim aligned with 2 * data_gen.tmm.num_points."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run small-scale spectral pretraining.")
     parser.add_argument("--model-config", required=True)
     parser.add_argument("--train-config", required=True)
     args = parser.parse_args()
 
-    model_yaml = load_yaml_config(args.model_config)
-    train_yaml = load_yaml_config(args.train_config)
+    model_config_path = resolve_repo_path(args.model_config, project_root=PROJECT_ROOT)
+    train_config_path = resolve_repo_path(args.train_config, project_root=PROJECT_ROOT)
+    model_yaml = load_yaml_config(model_config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
+    train_yaml = load_yaml_config(train_config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
 
     token_list = _load_token_list(train_yaml["data"]["vocab_path"])
     components = build_trainer_components(
@@ -127,6 +143,16 @@ def main() -> None:
     )
     train_dataset = load_split_records(train_yaml["data"]["dataset_dir"], "train")
     eval_dataset = load_split_records(train_yaml["data"]["dataset_dir"], "val")
+    validate_record_spectrum_dim(
+        train_dataset,
+        split_name="train",
+        spectrum_dim=int(components["config"].spectrum_dim),
+    )
+    validate_record_spectrum_dim(
+        eval_dataset,
+        split_name="val",
+        spectrum_dim=int(components["config"].spectrum_dim),
+    )
     trainer = build_trainer(
         model=components["model"],
         train_dataset=train_dataset,

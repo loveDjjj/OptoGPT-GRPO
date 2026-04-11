@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from our_work._shared.io.config import load_yaml_config
+from our_work._shared.io.config import load_yaml_config, resolve_repo_path
 from our_work.data_gen.pipeline.build_dataset import build_small_dataset
 from our_work.data_gen.pipeline.material_registry import build_material_registry
 from our_work._shared.utils.seed import set_global_seed
@@ -19,7 +19,8 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Path to the dataset YAML config.")
     args = parser.parse_args()
 
-    config = load_yaml_config(args.config)
+    config_path = resolve_repo_path(args.config, project_root=PROJECT_ROOT)
+    config = load_yaml_config(config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
     set_global_seed(int(config.get("seed", 42)))
     registry = build_material_registry(config["paths"]["database_dir"])
     build_small_dataset(

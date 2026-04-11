@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
 
+from our_work._shared.io.config import resolve_repo_path
 from our_work.data_gen.pipeline.simulator import flatten_rt_spectrum, simulate_structure_batch
 from our_work.pretrain.dataset.hf_dataset import load_split_records
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
@@ -44,21 +45,8 @@ def _json_safe_value(value):
     return value
 
 
-def resolve_repo_path(path: str | Path, *, project_root: Path = PROJECT_ROOT) -> Path:
-    candidate = Path(path)
-    if candidate.is_absolute():
-        return candidate
-
-    search_roots = [project_root, *project_root.parents]
-    for root in search_roots:
-        resolved = root / candidate
-        if resolved.exists():
-            return resolved
-    return project_root / candidate
-
-
 def resolve_checkpoint_dir(path: str | Path) -> Path:
-    path = resolve_repo_path(path)
+    path = resolve_repo_path(path, project_root=PROJECT_ROOT)
     if (path / "config.json").exists():
         return path
 
@@ -82,6 +70,22 @@ def load_eval_components(
     model.eval()
     tokenizer = SpectralStructureTokenizer.from_pretrained(resolved_dir)
     return model, tokenizer, torch_device
+
+
+def resolve_num_points(model, requested_num_points: int | None) -> int:
+    spectrum_dim = int(getattr(model.config, "spectrum_dim", 0))
+    if spectrum_dim <= 0 or spectrum_dim % 2 != 0:
+        raise ValueError(f"model.config.spectrum_dim must be a positive even integer; got {spectrum_dim}")
+
+    inferred_num_points = spectrum_dim // 2
+    if requested_num_points is None:
+        return inferred_num_points
+    if int(requested_num_points) != inferred_num_points:
+        raise ValueError(
+            f"num_points mismatch: checkpoint expects {inferred_num_points} because spectrum_dim={spectrum_dim}, "
+            f"but CLI provided {int(requested_num_points)}."
+        )
+    return int(requested_num_points)
 
 
 @torch.inference_mode()
@@ -361,7 +365,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--max-new-tokens", type=int, default=10)
     parser.add_argument("--wavelength-min", type=float, default=2.0)
     parser.add_argument("--wavelength-max", type=float, default=15.0)
-    parser.add_argument("--num-points", type=int, default=1024)
+    parser.add_argument("--num-points", type=int, default=None)
     parser.add_argument("--incident-angle", type=float, default=0.0)
     parser.add_argument("--polarization", type=int, default=0)
     parser.add_argument("--tolerance", type=float, default=1e-3)
@@ -375,11 +379,16 @@ def main(argv: list[str] | None = None) -> dict:
     args = parser.parse_args(argv)
 
     model, tokenizer, device = load_eval_components(args.checkpoint_dir, device=args.device)
-    dataset_dir = resolve_repo_path(args.dataset_dir)
-    database_dir = resolve_repo_path(args.database_dir)
+    num_points = resolve_num_points(model, requested_num_points=args.num_points)
+    dataset_dir = resolve_repo_path(args.dataset_dir, project_root=PROJECT_ROOT)
+    database_dir = resolve_repo_path(args.database_dir, project_root=PROJECT_ROOT)
     records = load_split_records(dataset_dir, args.split)[: args.max_samples]
     resolved_checkpoint_dir = resolve_checkpoint_dir(args.checkpoint_dir)
-    run_root = Path(args.output_dir) if args.output_dir else resolve_repo_path("our_work/pretrain/outputs")
+    run_root = (
+        resolve_repo_path(args.output_dir, project_root=PROJECT_ROOT)
+        if args.output_dir
+        else resolve_repo_path("outputs/our_work/pretrain", project_root=PROJECT_ROOT)
+    )
     run_dir = create_eval_run_dir(run_root, run_name=_infer_run_name(resolved_checkpoint_dir))
     results = evaluate_records(
         model=model,
@@ -387,7 +396,7 @@ def main(argv: list[str] | None = None) -> dict:
         records=records,
         database_path=str(database_dir),
         wavelength_range_um=(args.wavelength_min, args.wavelength_max),
-        num_points=args.num_points,
+        num_points=num_points,
         incident_angle=args.incident_angle,
         polarization=args.polarization,
         tolerance=args.tolerance,
@@ -401,7 +410,7 @@ def main(argv: list[str] | None = None) -> dict:
         "database_dir": str(database_dir),
         "split": args.split,
         "max_samples": len(records),
-        "num_points": args.num_points,
+        "num_points": num_points,
         "wavelength_range_um": [args.wavelength_min, args.wavelength_max],
         "incident_angle": args.incident_angle,
         "polarization": args.polarization,
@@ -412,7 +421,7 @@ def main(argv: list[str] | None = None) -> dict:
         run_dir=run_dir,
         rows=results,
         metadata=metadata,
-        num_points=args.num_points,
+        num_points=num_points,
         worst_sample_plots=args.worst_sample_plots,
         random_sample_plots=args.random_sample_plots,
         disable_plots=args.disable_plots,
@@ -426,7 +435,7 @@ def main(argv: list[str] | None = None) -> dict:
     text = json.dumps(payload, ensure_ascii=True, indent=2, allow_nan=False)
     print(text)
     if args.output_json:
-        output_path = Path(args.output_json)
+        output_path = resolve_repo_path(args.output_json, project_root=PROJECT_ROOT)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(text, encoding="utf-8")
     return payload

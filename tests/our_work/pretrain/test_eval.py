@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from our_work.pretrain.scripts.run_eval import (
     evaluate_token_prediction,
     evaluate_records,
     main,
+    resolve_num_points,
     resolve_repo_path,
 )
 
@@ -256,6 +258,20 @@ def test_resolve_repo_path_finds_parent_relative_path(tmp_path: Path):
 
     resolved = resolve_repo_path("database", project_root=worktree_root)
     assert resolved == database_dir
+
+
+def test_resolve_num_points_infers_and_validates_model_spectrum_dim() -> None:
+    model = SimpleNamespace(config=SimpleNamespace(spectrum_dim=2048))
+
+    assert resolve_num_points(model, requested_num_points=None) == 1024
+
+    try:
+        resolve_num_points(model, requested_num_points=512)
+    except ValueError as exc:
+        assert "spectrum_dim" in str(exc)
+        assert "1024" in str(exc)
+    else:
+        raise AssertionError("mismatched num_points should raise ValueError")
 
 
 def test_run_eval_main_writes_summary_results_and_plots(tmp_path: Path, monkeypatch):

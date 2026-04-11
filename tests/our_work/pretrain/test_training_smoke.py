@@ -1,11 +1,13 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from our_work.pretrain.dataset.hf_dataset import load_parquet_records
 from our_work.pretrain.scripts.run_pretrain import (
     build_trainer,
     build_trainer_components,
+    validate_record_spectrum_dim,
 )
 
 
@@ -59,3 +61,17 @@ def test_build_trainer_components_and_load_parquet_records(tmp_path: Path):
     train_result = trainer.train()
     assert trainer.state.global_step == 1
     assert train_result.training_loss >= 0.0
+
+
+def test_validate_record_spectrum_dim_rejects_mismatched_model_input_width() -> None:
+    records = [
+        {
+            "sample_id": "sample-000",
+            "layer_count": 5,
+            "structure_tokens": ["Ge_10"],
+            "spectrum_rt": [0.1] * 64,
+        }
+    ]
+
+    with pytest.raises(ValueError, match="spectrum_dim"):
+        validate_record_spectrum_dim(records, split_name="train", spectrum_dim=32)
