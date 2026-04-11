@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -27,6 +28,20 @@ from our_work.pretrain.eval_plots import (
 )
 from our_work.pretrain.model.generation import generate_structure_tokens
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
+
+
+def _json_safe_value(value):
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    return value
 
 
 def resolve_repo_path(path: str | Path, *, project_root: Path = PROJECT_ROOT) -> Path:
@@ -79,6 +94,39 @@ def run_eval_sample(model, tokenizer, spectra: torch.Tensor, max_new_tokens: int
     )
 
 
+def _is_invalid_structure_token(token: str) -> bool:
+    parts = str(token).rsplit("_", 1)
+    if len(parts) != 2 or not parts[0]:
+        return True
+    try:
+        int(parts[1])
+    except ValueError:
+        return True
+    return False
+
+
+def _has_missing_material_data(predicted_tokens: list[str], database_path: str | Path) -> bool:
+    database_dir = Path(database_path)
+    for token in predicted_tokens:
+        if _is_invalid_structure_token(token):
+            return False
+        material = str(token).rsplit("_", 1)[0]
+        if material.strip().lower() == "air":
+            continue
+        if not ((database_dir / f"{material}.csv").exists() or (database_dir / f"{material}.xlsx").exists()):
+            return True
+    return False
+
+
+def _validate_spectrum_length(name: str, spectrum: np.ndarray, num_points: int) -> None:
+    expected_length = 2 * int(num_points)
+    if spectrum.ndim != 1 or spectrum.size != expected_length:
+        raise ValueError(
+            f"{name} must contain exactly {expected_length} values for num_points={num_points}; "
+            f"got {int(spectrum.size)}"
+        )
+
+
 def evaluate_token_prediction(
     *,
     record: dict,
@@ -92,6 +140,8 @@ def evaluate_token_prediction(
     complex_dtype: str,
 ) -> dict:
     target_tokens = list(record["structure_tokens"])
+    target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32).reshape(-1)
+    _validate_spectrum_length("target_spectrum_rt", target_spectrum, num_points)
     result = {
         "sample_id": record["sample_id"],
         "target_layer_count": int(record["layer_count"]),
@@ -102,11 +152,15 @@ def evaluate_token_prediction(
         "generated_valid": False,
         "spectrum_rmse": None,
         "spectrum_mae": None,
-        "target_spectrum_rt": np.asarray(record["spectrum_rt"], dtype=np.float32).tolist(),
+        "target_spectrum_rt": target_spectrum.tolist(),
         "predicted_spectrum_rt": None,
     }
 
     if not predicted_tokens:
+        return result
+    if any(_is_invalid_structure_token(token) for token in predicted_tokens):
+        return result
+    if _has_missing_material_data(predicted_tokens, database_path):
         return result
 
     try:
@@ -120,14 +174,14 @@ def evaluate_token_prediction(
             tolerance=tolerance,
             complex_dtype=complex_dtype,
         )
-    except Exception:
+    except ValueError:
         return result
 
     if not bool(ok_mask[0]):
         return result
 
-    predicted_spectrum = flatten_rt_spectrum(reflections[0], transmissions[0]).astype(np.float32)
-    target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32)
+    predicted_spectrum = flatten_rt_spectrum(reflections[0], transmissions[0]).astype(np.float32).reshape(-1)
+    _validate_spectrum_length("predicted_spectrum_rt", predicted_spectrum, num_points)
     diff = predicted_spectrum - target_spectrum
     result["generated_valid"] = True
     result["spectrum_rmse"] = float(np.sqrt(np.mean(diff**2)))
@@ -349,7 +403,8 @@ def main(argv: list[str] | None = None) -> dict:
         "results": results,
         "run_dir": str(run_dir),
     }
-    text = json.dumps(payload, ensure_ascii=True, indent=2)
+    payload = _json_safe_value(payload)
+    text = json.dumps(payload, ensure_ascii=True, indent=2, allow_nan=False)
     print(text)
     if args.output_json:
         output_path = Path(args.output_json)

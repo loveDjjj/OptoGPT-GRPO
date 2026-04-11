@@ -85,6 +85,70 @@ def test_evaluate_token_prediction_marks_invalid_generated_tokens(tmp_path: Path
     assert result["spectrum_rmse"] is None
 
 
+def test_evaluate_token_prediction_propagates_simulator_system_exceptions(tmp_path: Path, monkeypatch):
+    record = {
+        "sample_id": "sample-err",
+        "layer_count": 1,
+        "structure_tokens": ["Ge_10"],
+        "spectrum_rt": [0.1] * 32,
+    }
+    database_dir = tmp_path / "database"
+    database_dir.mkdir()
+    (database_dir / "Ge.csv").write_text("wl,n,k\n2.0,4.0,0.1\n15.0,4.0,0.1\n", encoding="utf-8")
+
+    def raise_runtime_error(*args, **kwargs):
+        raise RuntimeError("simulator backend unavailable")
+
+    monkeypatch.setattr("our_work.pretrain.scripts.run_eval.simulate_structure_batch", raise_runtime_error)
+
+    try:
+        evaluate_token_prediction(
+            record=record,
+            predicted_tokens=["Ge_10"],
+            database_path=str(database_dir),
+            wavelength_range_um=(2.0, 15.0),
+            num_points=16,
+            incident_angle=0.0,
+            polarization=0,
+            tolerance=1e-3,
+            complex_dtype="complex128",
+        )
+    except RuntimeError as exc:
+        assert "backend unavailable" in str(exc)
+    else:
+        raise AssertionError("simulator/config failures should be propagated")
+
+
+def test_evaluate_token_prediction_rejects_malformed_target_spectrum_length(tmp_path: Path):
+    database_dir = tmp_path / "database"
+    database_dir.mkdir()
+    (database_dir / "Ge.csv").write_text("wl,n,k\n2.0,4.0,0.1\n15.0,4.0,0.1\n", encoding="utf-8")
+    record = {
+        "sample_id": "sample-bad-target",
+        "layer_count": 1,
+        "structure_tokens": ["Ge_10"],
+        "spectrum_rt": [0.1] * 31,
+    }
+
+    try:
+        evaluate_token_prediction(
+            record=record,
+            predicted_tokens=["Ge_10"],
+            database_path=str(database_dir),
+            wavelength_range_um=(2.0, 15.0),
+            num_points=16,
+            incident_angle=0.0,
+            polarization=0,
+            tolerance=1e-3,
+            complex_dtype="complex128",
+        )
+    except ValueError as exc:
+        assert "target_spectrum_rt" in str(exc)
+        assert "32" in str(exc)
+    else:
+        raise AssertionError("malformed target spectrum lengths should raise ValueError")
+
+
 def test_resolve_repo_path_finds_parent_relative_path(tmp_path: Path):
     repo_root = tmp_path / "repo"
     worktree_root = repo_root / ".worktrees" / "feat-x"
@@ -204,3 +268,72 @@ def test_run_eval_main_writes_summary_results_and_plots(tmp_path: Path, monkeypa
     assert parsed_rows[0]["target_spectrum_rt"] == [0.1] * 32
     assert parsed_rows[0]["predicted_spectrum_rt"] == [0.1] * 32
     assert parsed_rows[1]["predicted_spectrum_rt"] is None
+
+
+def test_run_eval_main_output_json_normalizes_non_finite_metrics(tmp_path: Path, monkeypatch):
+    checkpoint_dir = tmp_path / "outputs" / "base_run" / "checkpoint-9"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "config.json").write_text("{}", encoding="utf-8")
+    output_json = tmp_path / "payload.json"
+
+    monkeypatch.setattr(
+        "our_work.pretrain.scripts.run_eval.load_eval_components",
+        lambda *args, **kwargs: (object(), object(), "cpu"),
+    )
+    monkeypatch.setattr(
+        "our_work.pretrain.scripts.run_eval.load_split_records",
+        lambda *args, **kwargs: [
+            {
+                "sample_id": "sample-000",
+                "layer_count": 1,
+                "structure_tokens": ["Ge_10"],
+                "spectrum_rt": [0.1] * 32,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "our_work.pretrain.scripts.run_eval.evaluate_records",
+        lambda **kwargs: [
+            {
+                "sample_id": "sample-000",
+                "target_layer_count": 1,
+                "prediction_layer_count": 1,
+                "target_tokens": ["Ge_10"],
+                "predicted_tokens": ["Ge_10"],
+                "token_exact_match": True,
+                "generated_valid": True,
+                "spectrum_rmse": float("nan"),
+                "spectrum_mae": float("inf"),
+                "target_spectrum_rt": [0.1] * 32,
+                "predicted_spectrum_rt": [0.1] * 32,
+            }
+        ],
+    )
+
+    payload = main(
+        [
+            "--checkpoint-dir",
+            str(checkpoint_dir.parent),
+            "--dataset-dir",
+            str(tmp_path / "dataset"),
+            "--database-dir",
+            str(tmp_path / "database"),
+            "--split",
+            "val",
+            "--max-samples",
+            "1",
+            "--num-points",
+            "16",
+            "--output-dir",
+            str(tmp_path / "eval-output"),
+            "--disable-plots",
+            "--output-json",
+            str(output_json),
+        ]
+    )
+
+    assert payload["results"][0]["spectrum_rmse"] is None
+    assert payload["results"][0]["spectrum_mae"] is None
+    written = json.loads(output_json.read_text(encoding="utf-8"))
+    assert written["results"][0]["spectrum_rmse"] is None
+    assert written["results"][0]["spectrum_mae"] is None
