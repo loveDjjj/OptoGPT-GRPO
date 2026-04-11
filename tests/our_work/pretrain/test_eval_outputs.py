@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -88,3 +90,8 @@ def test_create_eval_run_dir_creates_timestamped_subdirectories(tmp_path: Path) 
     assert run_dir.parent.name == "eval_runs"
     assert (run_dir / "plots").exists()
     assert (run_dir / "samples").exists()
+
+
+def test_create_eval_run_dir_requires_keyword_run_name(tmp_path: Path) -> None:
+    with pytest.raises(TypeError):
+        create_eval_run_dir(tmp_path, "base_run", timestamp="20260411-120000")
