@@ -280,6 +280,46 @@ Successfully installed ...
 
 #### Step 4: 生成数据集
 
+运行前，建议先确认数据生成配置里确实启用了分块采样和分块 TMM：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -c "import yaml, pathlib; cfg=yaml.safe_load(pathlib.Path('our_work/data_gen/configs/dataset_v1.yaml').read_text(encoding='utf-8')); print('sampling =', cfg['sampling']); print('tmm.batch_size =', cfg['tmm']['batch_size'])"
+```
+
+典型终端输出：
+
+```text
+sampling = {'device': 'auto', 'batch_size': 65536, 'max_duplicate_retry': 1000}
+tmm.batch_size = 2048
+```
+
+默认配置片段如下：
+
+```yaml
+data:
+  layer_counts: [5, 6, 7, 8, 9, 10]
+  samples_per_bucket: 500000
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
+
+sampling:
+  device: auto
+  batch_size: 65536
+  max_duplicate_retry: 1000
+
+tmm:
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex128
+  batch_size: 2048
+```
+
 ```bash
 cd /srv/OptoGPT-GRPO
 python our_work/data_gen/scripts/run_build_dataset.py --config our_work/data_gen/configs/dataset_v1.yaml
