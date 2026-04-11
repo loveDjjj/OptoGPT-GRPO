@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -13,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from our_work.data_gen.pipeline.simulator import flatten_rt_spectrum, simulate_structure_batch
 from our_work.pretrain.scripts.run_eval import (
     evaluate_token_prediction,
+    evaluate_records,
     main,
     resolve_repo_path,
 )
@@ -119,6 +121,61 @@ def test_evaluate_token_prediction_propagates_simulator_system_exceptions(tmp_pa
         raise AssertionError("simulator/config failures should be propagated")
 
 
+def test_evaluate_token_prediction_rejects_bad_database_path_as_config_error(tmp_path: Path):
+    record = {
+        "sample_id": "sample-bad-db",
+        "layer_count": 1,
+        "structure_tokens": ["Ge_10"],
+        "spectrum_rt": [0.1] * 32,
+    }
+
+    try:
+        evaluate_token_prediction(
+            record=record,
+            predicted_tokens=["Ge_10"],
+            database_path=str(tmp_path / "missing-db"),
+            wavelength_range_um=(2.0, 15.0),
+            num_points=16,
+            incident_angle=0.0,
+            polarization=0,
+            tolerance=1e-3,
+            complex_dtype="complex128",
+        )
+    except ValueError as exc:
+        assert "database_path" in str(exc)
+    else:
+        raise AssertionError("bad database_path should raise a configuration error")
+
+
+def test_evaluate_token_prediction_rejects_unsupported_complex_dtype(tmp_path: Path):
+    database_dir = tmp_path / "database"
+    database_dir.mkdir()
+    (database_dir / "Ge.csv").write_text("wl,n,k\n2.0,4.0,0.1\n15.0,4.0,0.1\n", encoding="utf-8")
+    record = {
+        "sample_id": "sample-bad-dtype",
+        "layer_count": 1,
+        "structure_tokens": ["Ge_10"],
+        "spectrum_rt": [0.1] * 32,
+    }
+
+    try:
+        evaluate_token_prediction(
+            record=record,
+            predicted_tokens=["Ge_10"],
+            database_path=str(database_dir),
+            wavelength_range_um=(2.0, 15.0),
+            num_points=16,
+            incident_angle=0.0,
+            polarization=0,
+            tolerance=1e-3,
+            complex_dtype="not-a-dtype",
+        )
+    except ValueError as exc:
+        assert "complex_dtype" in str(exc)
+    else:
+        raise AssertionError("unsupported complex_dtype should raise a configuration error")
+
+
 def test_evaluate_token_prediction_rejects_malformed_target_spectrum_length(tmp_path: Path):
     database_dir = tmp_path / "database"
     database_dir.mkdir()
@@ -147,6 +204,47 @@ def test_evaluate_token_prediction_rejects_malformed_target_spectrum_length(tmp_
         assert "32" in str(exc)
     else:
         raise AssertionError("malformed target spectrum lengths should raise ValueError")
+
+
+def test_evaluate_records_rejects_malformed_dataset_spectrum_before_model_forward(monkeypatch):
+    records = [
+        {
+            "sample_id": "sample-bad-row",
+            "layer_count": 1,
+            "structure_tokens": ["Ge_10"],
+            "spectrum_rt": [0.1] * 31,
+        }
+    ]
+
+    class UnexpectedModelCall(RuntimeError):
+        pass
+
+    def fail_if_called(*args, **kwargs):
+        raise UnexpectedModelCall("model forward should not run for malformed dataset rows")
+
+    monkeypatch.setattr("our_work.pretrain.scripts.run_eval.run_eval_sample", fail_if_called)
+
+    try:
+        evaluate_records(
+            model=object(),
+            tokenizer=object(),
+            records=records,
+            database_path="unused",
+            wavelength_range_um=(2.0, 15.0),
+            num_points=16,
+            incident_angle=0.0,
+            polarization=0,
+            tolerance=1e-3,
+            complex_dtype="complex128",
+            max_new_tokens=10,
+            device=torch.device("cpu"),
+        )
+    except ValueError as exc:
+        assert "target_spectrum_rt" in str(exc)
+    except UnexpectedModelCall as exc:
+        raise AssertionError(str(exc))
+    else:
+        raise AssertionError("malformed dataset rows should fail before model inference")
 
 
 def test_resolve_repo_path_finds_parent_relative_path(tmp_path: Path):

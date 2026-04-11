@@ -118,6 +118,21 @@ def _has_missing_material_data(predicted_tokens: list[str], database_path: str |
     return False
 
 
+def _validate_eval_config(*, database_path: str | Path, complex_dtype: str | torch.dtype) -> None:
+    database_dir = Path(database_path)
+    if not database_dir.exists() or not database_dir.is_dir():
+        raise ValueError(f"database_path must point to an existing directory: {database_path}")
+
+    if isinstance(complex_dtype, torch.dtype):
+        if complex_dtype not in {torch.complex64, torch.complex128}:
+            raise ValueError(f"unsupported complex_dtype: {complex_dtype}")
+        return
+
+    resolved = str(complex_dtype).strip().lower()
+    if resolved not in {"complex64", "torch.complex64", "c64", "complex128", "torch.complex128", "c128"}:
+        raise ValueError(f"unsupported complex_dtype: {complex_dtype}")
+
+
 def _validate_spectrum_length(name: str, spectrum: np.ndarray, num_points: int) -> None:
     expected_length = 2 * int(num_points)
     if spectrum.ndim != 1 or spectrum.size != expected_length:
@@ -142,6 +157,7 @@ def evaluate_token_prediction(
     target_tokens = list(record["structure_tokens"])
     target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32).reshape(-1)
     _validate_spectrum_length("target_spectrum_rt", target_spectrum, num_points)
+    _validate_eval_config(database_path=database_path, complex_dtype=complex_dtype)
     result = {
         "sample_id": record["sample_id"],
         "target_layer_count": int(record["layer_count"]),
@@ -207,9 +223,12 @@ def evaluate_records(
 ) -> list[dict]:
     results: list[dict] = []
     for record in records:
-        spectra = torch.from_numpy(
-            np.asarray([record["spectrum_rt"]], dtype=np.float32)
-        ).to(device)
+        target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32).reshape(-1)
+        _validate_spectrum_length("target_spectrum_rt", target_spectrum, num_points)
+    _validate_eval_config(database_path=database_path, complex_dtype=complex_dtype)
+    for record in records:
+        target_spectrum = np.asarray(record["spectrum_rt"], dtype=np.float32).reshape(-1)
+        spectra = torch.from_numpy(target_spectrum.reshape(1, -1)).to(device)
         predicted_tokens = run_eval_sample(
             model=model,
             tokenizer=tokenizer,
