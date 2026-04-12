@@ -1,0 +1,44 @@
+seed: 42
+
+paths:
+  database_dir: our_work/_shared/database
+  output_dir: outputs/our_work/data_gen/a100_4gpu
+
+data:
+  layer_counts: [5, 6, 7, 8, 9, 10]
+  samples_per_bucket: 500000
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
+
+sampling:
+  device: auto
+  batch_size: 65536
+  max_duplicate_retry: 1000
+
+tmm:
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex64
+  device: auto
+  cpu_threads: 16
+  batch_size: 4096
+
+distributed:
+  enabled: true
+  timeout_minutes: 30
+  shard_mode: layer_bucket
+
+shards:
+  records_per_shard: 50000
+
+splits:
+  train_ratio: 0.9
+  val_ratio: 0.1
+
+logging:
+  show_progress_bar: true

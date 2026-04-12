@@ -74,7 +74,13 @@ def load_eval_components(
 
 
 def resolve_num_points(model, requested_num_points: int | None) -> int:
-    spectrum_dim = int(getattr(model.config, "spectrum_dim", 0))
+    config = getattr(model, "config", None)
+    if config is None:
+        if requested_num_points is None:
+            raise ValueError("num_points is required when model.config.spectrum_dim is unavailable")
+        return int(requested_num_points)
+
+    spectrum_dim = int(getattr(config, "spectrum_dim", 0))
     if spectrum_dim <= 0 or spectrum_dim % 2 != 0:
         raise ValueError(f"model.config.spectrum_dim must be a positive even integer; got {spectrum_dim}")
 

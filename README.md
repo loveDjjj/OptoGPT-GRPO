@@ -180,8 +180,15 @@ torch 2.x.x cuda True
 默认服务器配置文件：
 
 - 数据生成：[dataset_v1.yaml](/O:/Optics%20Code/OptoGPT-GRPO/our_work/data_gen/configs/dataset_v1.yaml)
+- 数据生成（4 卡）：`our_work/data_gen/configs/a100_4gpu.yaml`
+- 数据生成（8 卡）：`our_work/data_gen/configs/a100_8gpu.yaml`
 - 训练：[base_train.yaml](/O:/Optics%20Code/OptoGPT-GRPO/our_work/pretrain/configs/train/base_train.yaml)
+- 训练（4 卡）：`our_work/pretrain/configs/train/a100_4gpu.yaml`
+- 训练（8 卡）：`our_work/pretrain/configs/train/a100_8gpu.yaml`
 - 模型：[base_gpt.yaml](/O:/Optics%20Code/OptoGPT-GRPO/our_work/pretrain/configs/model/base_gpt.yaml)
+- 强化学习（基础）：`our_work/rl/configs/grpo/base_grpo.yaml`
+- 强化学习（4 卡）：`our_work/rl/configs/grpo/a100_4gpu.yaml`
+- 强化学习（8 卡）：`our_work/rl/configs/grpo/a100_8gpu.yaml`
 
 当前默认值：
 
@@ -194,16 +201,30 @@ torch 2.x.x cuda True
   - `sampling.device: auto`
   - `sampling.batch_size: 65536`
   - `sampling.max_duplicate_retry: 1000`
+  - `tmm.device: auto`
+  - `tmm.cpu_threads: 16`
   - `tmm.batch_size: 2048`
   - `tmm.num_points: 1024`
 - `base_train.yaml`
   - `data.dataset_dir: outputs/our_work/data_gen/v1`
   - `data.vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json`
+  - `data.num_workers: 8`
+  - `data.prefetch_factor: 4`
+  - `data.pin_memory: true`
+  - `data.persistent_workers: true`
   - `training.output_dir: outputs/our_work/pretrain/base_train`
+  - `training.gradient_accumulation_steps: 2`
   - `training.max_steps: null`
   - `training.num_train_epochs: 5`
+  - `training.bf16: true`
+  - `training.tf32: true`
 - `base_gpt.yaml`
   - `model.spectrum_dim: 2048`
+- `base_grpo.yaml`
+  - `training.per_device_batch_size: 8`
+  - `rollout.group_size: 4`
+  - `rollout.batch_size: 256`
+  - `reward.tmm.batch_size: 2048`
 
 关键约束：
 
@@ -350,6 +371,26 @@ ls outputs/our_work/data_gen/v1/shards | head
 cat outputs/our_work/data_gen/v1/splits/split_manifest.json
 ```
 
+4 卡 A100 正式命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=4 our_work/data_gen/scripts/run_build_dataset.py --config our_work/data_gen/configs/a100_4gpu.yaml
+```
+
+8 卡 A100 正式命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=8 our_work/data_gen/scripts/run_build_dataset.py --config our_work/data_gen/configs/a100_8gpu.yaml
+```
+
+说明：
+
+- 当前多卡数据生成先按 `layer bucket` 在 rank 之间分配，保证 bucket 内全局唯一不会被跨 rank 破坏。
+- `4` 卡时 6 个 bucket 会分到 4 个 rank。
+- `8` 卡时会有空闲 rank，这是当前版本为了保证唯一性和正确性做的保守实现。
+
 #### Step 5: 启动预训练
 
 ```bash
@@ -379,6 +420,24 @@ python our_work/pretrain/scripts/run_pretrain.py \
 ```bash
 ls outputs/our_work/pretrain/base_train
 ls outputs/our_work/pretrain/base_train/checkpoint-1
+```
+
+4 卡 A100 正式命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=4 our_work/pretrain/scripts/run_pretrain.py \
+  --model-config our_work/pretrain/configs/model/base_gpt.yaml \
+  --train-config our_work/pretrain/configs/train/a100_4gpu.yaml
+```
+
+8 卡 A100 正式命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=8 our_work/pretrain/scripts/run_pretrain.py \
+  --model-config our_work/pretrain/configs/model/base_gpt.yaml \
+  --train-config our_work/pretrain/configs/train/a100_8gpu.yaml
 ```
 
 #### Step 6: 运行独立评测
@@ -421,6 +480,43 @@ our_work eval:  42%|████▏     | 108/256 [00:xx<00:xx, ... sample/s, va
 
 - `outputs/our_work/eval/base_train/eval_runs/<timestamp>/plots/*.png`
 - `outputs/our_work/eval/base_train/eval_runs/<timestamp>/samples/*.png`
+
+#### Step 7: 运行 our_work 轻量 GRPO
+
+`our_work/rl` 当前是一个轻量、训练就绪的 GRPO 子系统，接口风格尽量贴近 `Transformers + torchrun`，但没有引入重型外部 RL 平台。
+
+单机单卡 smoke：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python our_work/rl/scripts/run_grpo.py --config our_work/rl/configs/grpo/base_grpo.yaml
+```
+
+4 卡 A100 正式命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=4 our_work/rl/scripts/run_grpo.py --config our_work/rl/configs/grpo/a100_4gpu.yaml
+```
+
+8 卡 A100 正式命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=8 our_work/rl/scripts/run_grpo.py --config our_work/rl/configs/grpo/a100_8gpu.yaml
+```
+
+典型终端输出：
+
+```text
+our_work grpo: 100%|██████████| ... [loss=..., reward=..., valid=...]
+```
+
+该步骤完成后应出现：
+
+- `outputs/our_work/rl/<run-name>/metrics/train_metrics.jsonl`
+- `outputs/our_work/rl/<run-name>/metrics/eval_metrics.jsonl`
+- `outputs/our_work/rl/<run-name>/checkpoints/checkpoint-*`
 
 ### 5. 只部署已有 checkpoint 做评测
 如果你不想在服务器上重训，只想评测已有模型，需要同步：

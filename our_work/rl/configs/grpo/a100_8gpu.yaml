@@ -1,0 +1,61 @@
+device: auto
+
+model:
+  checkpoint_dir: outputs/our_work/pretrain/a100_8gpu
+
+data:
+  dataset_dir: outputs/our_work/data_gen/v1
+  train_split: train
+  eval_split: val
+  max_train_samples: null
+  max_eval_samples: 512
+  num_workers: 8
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+
+training:
+  output_dir: outputs/our_work/rl/a100_8gpu
+  per_device_batch_size: 12
+  gradient_accumulation_steps: 2
+  epochs: 1
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  log_steps: 10
+  eval_steps: 50
+  save_steps: 50
+  clip_epsilon: 0.2
+  advantage_mode: zscore
+  advantage_eps: 1.0e-6
+  bf16: true
+
+rollout:
+  group_size: 4
+  decode: sample
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  max_new_tokens: 12
+  batch_size: 768
+
+scoring:
+  batch_size: 1536
+
+reward:
+  spectrum_metric: rt_rmse
+  invalid_structure_penalty: 1.0
+  tmm:
+    database_path: our_work/_shared/database
+    wavelength_range_um: [2.0, 15.0]
+    num_points: 1024
+    incident_angle: 0.0
+    polarization: 0
+    tolerance: 0.001
+    complex_dtype: complex64
+    batch_size: 6144
+    device: auto
+
+distributed:
+  backend: nccl
+  timeout_minutes: 30

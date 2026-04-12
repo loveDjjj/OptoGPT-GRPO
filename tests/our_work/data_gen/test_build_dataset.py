@@ -7,8 +7,10 @@ import pytest
 
 from our_work.data_gen.pipeline.build_dataset import build_small_dataset
 from our_work.data_gen.scripts.run_build_dataset import (
+    _assign_layer_counts,
     resolve_data_gen_runtime_config,
     resolve_thickness_values_nm,
+    merge_rank_split_manifests,
 )
 
 
@@ -91,6 +93,37 @@ def test_resolve_data_gen_runtime_config_reads_sampling_and_tmm_batch_sizes():
     assert runtime["sampling_batch_size"] == 8
     assert runtime["max_duplicate_retry"] == 9
     assert runtime["tmm_batch_size"] == 2
+
+
+def test_assign_layer_counts_round_robins_layer_buckets():
+    layer_counts = [5, 6, 7, 8, 9, 10]
+
+    assert _assign_layer_counts(layer_counts, rank=0, world_size=4, shard_mode="layer_bucket") == [5, 9]
+    assert _assign_layer_counts(layer_counts, rank=1, world_size=4, shard_mode="layer_bucket") == [6, 10]
+    assert _assign_layer_counts(layer_counts, rank=2, world_size=4, shard_mode="layer_bucket") == [7]
+    assert _assign_layer_counts(layer_counts, rank=3, world_size=4, shard_mode="layer_bucket") == [8]
+    assert _assign_layer_counts(layer_counts, rank=7, world_size=8, shard_mode="layer_bucket") == []
+
+
+def test_merge_rank_split_manifests_combines_rank_outputs(tmp_path: Path):
+    splits_dir = tmp_path / "splits"
+    splits_dir.mkdir(parents=True)
+    (splits_dir / "split_manifest.rank00.json").write_text(
+        json.dumps({"train": ["rank00-shard-00000.parquet"], "val": ["rank00-shard-00001.parquet"], "test": []}),
+        encoding="utf-8",
+    )
+    (splits_dir / "split_manifest.rank01.json").write_text(
+        json.dumps({"train": ["rank01-shard-00000.parquet"], "val": [], "test": ["rank01-shard-00001.parquet"]}),
+        encoding="utf-8",
+    )
+
+    merged = merge_rank_split_manifests(tmp_path, world_size=2)
+
+    assert merged["train"] == ["rank00-shard-00000.parquet", "rank01-shard-00000.parquet"]
+    assert merged["val"] == ["rank00-shard-00001.parquet"]
+    assert merged["test"] == ["rank01-shard-00001.parquet"]
+    written = json.loads((splits_dir / "split_manifest.json").read_text(encoding="utf-8"))
+    assert written == merged
 
 
 def test_build_small_dataset_chunks_tmm_calls(monkeypatch, tmp_path: Path):

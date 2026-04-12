@@ -2,16 +2,28 @@ data:
   # 相对路径会由训练入口固定解析到仓库根目录，避免依赖启动时的 cwd。
   dataset_dir: outputs/our_work/data_gen/v1
   vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json
+  num_workers: 8
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
 
 training:
   # 服务器默认把 checkpoint 与 trainer 状态写到统一 outputs 目录。
   output_dir: outputs/our_work/pretrain/base_train
   per_device_train_batch_size: 8
   per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 2
   num_train_epochs: 5
   # 正式训练默认由 epoch 控制；若要快速 smoke，可临时改成小整数。
   max_steps: null
   learning_rate: 5.0e-4
+  bf16: true
+  tf32: true
   logging_steps: 50
   eval_steps: 500
   save_steps: 500
+  save_total_limit: 3
+
+distributed:
+  backend: nccl
+  ddp_find_unused_parameters: false

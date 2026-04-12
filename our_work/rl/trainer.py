@@ -1,0 +1,279 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping
+
+import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
+from tqdm.auto import tqdm
+
+from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
+from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
+from our_work.rl.dataset import SpectralRecordDataset, rl_batch_collator
+from our_work.rl.objective import group_relative_advantages, grpo_clipped_surrogate
+from our_work.rl.policy import RolloutConfig, batch_sequence_logprobs, sample_structure_rollouts
+from our_work.rl.reward import compute_rollout_rewards
+from utils.dist import DistributedContext, reduce_tensor
+
+
+@dataclass
+class RLComponents:
+    model: torch.nn.Module
+    raw_model: SpectralGPTForCausalLM
+    tokenizer: SpectralStructureTokenizer
+
+
+class SpectralGRPOTrainer:
+    def __init__(
+        self,
+        *,
+        components: RLComponents,
+        config: Mapping[str, Any],
+        run_dir: str | Path,
+        dist_ctx: DistributedContext,
+    ) -> None:
+        self.model = components.model
+        self.raw_model = components.raw_model
+        self.tokenizer = components.tokenizer
+        self.config = config
+        self.run_dir = Path(run_dir)
+        self.dist_ctx = dist_ctx
+
+        data_cfg = config["data"]
+        training_cfg = config["training"]
+        rollout_cfg = config["rollout"]
+        reward_cfg = config["reward"]
+
+        self.epochs = int(training_cfg.get("epochs", 1))
+        self.per_device_batch_size = int(training_cfg["per_device_batch_size"])
+        self.gradient_accumulation_steps = max(1, int(training_cfg.get("gradient_accumulation_steps", 1)))
+        self.learning_rate = float(training_cfg.get("learning_rate", 1.0e-5))
+        self.weight_decay = float(training_cfg.get("weight_decay", 0.0))
+        self.grad_clip_norm = float(training_cfg.get("grad_clip_norm", 1.0))
+        self.log_steps = max(1, int(training_cfg.get("log_steps", 10)))
+        self.eval_steps = int(training_cfg.get("eval_steps", 0))
+        self.save_steps = int(training_cfg.get("save_steps", 0))
+        self.num_workers = int(data_cfg.get("num_workers", 0))
+        self.pin_memory = bool(data_cfg.get("pin_memory", False))
+        self.prefetch_factor = data_cfg.get("prefetch_factor")
+        self.persistent_workers = bool(data_cfg.get("persistent_workers", self.num_workers > 0))
+        self.bf16 = bool(training_cfg.get("bf16", False))
+
+        self.group_size = int(rollout_cfg.get("group_size", 4))
+        self.rollout_config = RolloutConfig(
+            decode=str(rollout_cfg.get("decode", "sample")),
+            temperature=float(rollout_cfg.get("temperature", 1.0)),
+            top_k=int(rollout_cfg.get("top_k", 0)),
+            top_p=float(rollout_cfg.get("top_p", 1.0)),
+            max_new_tokens=int(rollout_cfg.get("max_new_tokens", 12)),
+            batch_size=int(rollout_cfg.get("batch_size", self.per_device_batch_size * self.group_size)),
+        )
+        self.score_batch_size = int(config.get("scoring", {}).get("batch_size", self.rollout_config.batch_size))
+        self.clip_epsilon = float(training_cfg.get("clip_epsilon", 0.2))
+        self.advantage_mode = str(training_cfg.get("advantage_mode", "zscore"))
+        self.advantage_eps = float(training_cfg.get("advantage_eps", 1.0e-6))
+        self.invalid_structure_penalty = float(reward_cfg.get("invalid_structure_penalty", 1.0))
+
+        self.reward_tmm_cfg = reward_cfg["tmm"]
+        self.reward_metric = str(reward_cfg.get("spectrum_metric", "rt_rmse"))
+
+        self.optimizer = torch.optim.AdamW(
+            self.raw_model.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics_dir = self.run_dir / "metrics"
+        self.checkpoints_dir = self.run_dir / "checkpoints"
+        self.metrics_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+    def _make_dataloader(self, dataset: SpectralRecordDataset, *, shuffle: bool) -> tuple[DataLoader, DistributedSampler | None]:
+        sampler = None
+        if self.dist_ctx.enabled:
+            sampler = DistributedSampler(dataset, shuffle=shuffle, drop_last=False)
+        kwargs = {
+            "dataset": dataset,
+            "batch_size": self.per_device_batch_size,
+            "shuffle": shuffle if sampler is None else False,
+            "sampler": sampler,
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+            "persistent_workers": self.persistent_workers if self.num_workers > 0 else False,
+            "collate_fn": rl_batch_collator,
+        }
+        if self.num_workers > 0 and self.prefetch_factor is not None:
+            kwargs["prefetch_factor"] = int(self.prefetch_factor)
+        return DataLoader(**kwargs), sampler
+
+    def _reward_kwargs(self) -> dict[str, Any]:
+        return {
+            "database_path": self.reward_tmm_cfg["database_path"],
+            "wavelength_range_um": tuple(self.reward_tmm_cfg["wavelength_range_um"]),
+            "num_points": int(self.reward_tmm_cfg["num_points"]),
+            "incident_angle": float(self.reward_tmm_cfg.get("incident_angle", 0.0)),
+            "polarization": int(self.reward_tmm_cfg.get("polarization", 0)),
+            "tolerance": float(self.reward_tmm_cfg.get("tolerance", 1.0e-3)),
+            "complex_dtype": str(self.reward_tmm_cfg.get("complex_dtype", "complex128")),
+            "batch_size": int(self.reward_tmm_cfg.get("batch_size", self.score_batch_size)),
+            "invalid_structure_penalty": self.invalid_structure_penalty,
+            "spectrum_metric": self.reward_metric,
+            "device": self.reward_tmm_cfg.get("device", self.dist_ctx.device.type),
+        }
+
+    def _save_checkpoint(self, step: int) -> None:
+        if not self.dist_ctx.is_main:
+            return
+        checkpoint_dir = self.checkpoints_dir / f"checkpoint-{step}"
+        self.raw_model.save_pretrained(checkpoint_dir)
+        self.tokenizer.save_pretrained(checkpoint_dir)
+
+    def _evaluate(self, dataloader: DataLoader) -> dict[str, float]:
+        self.raw_model.eval()
+        total_reward = 0.0
+        total_count = 0
+        for batch in dataloader:
+            spectra = batch["spectra"].to(self.dist_ctx.device)
+            records = batch["records"]
+            rollout_samples = sample_structure_rollouts(
+                self.model,
+                self.tokenizer,
+                spectra,
+                [record["sample_id"] for record in records],
+                group_size=1,
+                config=RolloutConfig(
+                    decode="greedy",
+                    temperature=1.0,
+                    top_k=0,
+                    top_p=1.0,
+                    max_new_tokens=self.rollout_config.max_new_tokens,
+                    batch_size=self.rollout_config.batch_size,
+                ),
+            )
+            rewards = compute_rollout_rewards(
+                structure_token_groups=[sample.structure_tokens for sample in rollout_samples],
+                target_spectra=[record["spectrum_rt"] for record in records],
+                **self._reward_kwargs(),
+            )["rewards"].to(dtype=torch.float32, device=self.dist_ctx.device)
+            total_reward += float(rewards.sum().item())
+            total_count += int(rewards.numel())
+        reward_tensor = torch.tensor([total_reward, total_count], dtype=torch.float32, device=self.dist_ctx.device)
+        reduced = reduce_tensor(reward_tensor, op="sum")
+        mean_reward = float(reduced[0].item() / max(1.0, reduced[1].item()))
+        return {"mean_eval_reward": mean_reward}
+
+    def train(self, train_dataset: SpectralRecordDataset, eval_dataset: SpectralRecordDataset | None = None) -> None:
+        train_loader, train_sampler = self._make_dataloader(train_dataset, shuffle=True)
+        eval_loader = None
+        if eval_dataset is not None and len(eval_dataset) > 0:
+            eval_loader, _ = self._make_dataloader(eval_dataset, shuffle=False)
+
+        global_step = 0
+        progress = tqdm(
+            range(self.epochs * len(train_loader)),
+            disable=not self.dist_ctx.is_main,
+            dynamic_ncols=True,
+            desc="our_work grpo",
+        )
+        for epoch in range(self.epochs):
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+            for batch_index, batch in enumerate(train_loader):
+                spectra = batch["spectra"].to(self.dist_ctx.device)
+                records = batch["records"]
+                rollout_samples = sample_structure_rollouts(
+                    self.model,
+                    self.tokenizer,
+                    spectra,
+                    [record["sample_id"] for record in records],
+                    group_size=self.group_size,
+                    config=self.rollout_config,
+                )
+                expanded_spectra = spectra.repeat_interleave(self.group_size, dim=0)
+                reward_outputs = compute_rollout_rewards(
+                    structure_token_groups=[sample.structure_tokens for sample in rollout_samples],
+                    target_spectra=[record["spectrum_rt"] for record in records for _ in range(self.group_size)],
+                    **self._reward_kwargs(),
+                )
+                rewards = reward_outputs["rewards"].to(device=self.dist_ctx.device, dtype=torch.float32)
+                advantages = group_relative_advantages(
+                    rewards,
+                    target_count=len(records),
+                    group_size=self.group_size,
+                    mode=self.advantage_mode,
+                    eps=self.advantage_eps,
+                )
+                current_logprobs, _ = batch_sequence_logprobs(
+                    self.model,
+                    self.tokenizer,
+                    expanded_spectra,
+                    [sample.token_ids for sample in rollout_samples],
+                    batch_size=self.score_batch_size,
+                )
+                old_logprobs = torch.tensor(
+                    [sample.sequence_logprob for sample in rollout_samples],
+                    dtype=torch.float32,
+                    device=self.dist_ctx.device,
+                )
+
+                autocast_enabled = self.bf16 and self.dist_ctx.device.type == "cuda"
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=autocast_enabled):
+                    objective_outputs = grpo_clipped_surrogate(
+                        current_logprob=current_logprobs,
+                        old_logprob=old_logprobs,
+                        advantage=advantages,
+                        clip_epsilon=self.clip_epsilon,
+                    )
+                    loss = -objective_outputs["surrogate"].mean() / self.gradient_accumulation_steps
+
+                loss.backward()
+                if (batch_index + 1) % self.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
+                    global_step += 1
+                    if hasattr(progress, "set_postfix"):
+                        progress.set_postfix(
+                            {
+                                "loss": float(loss.item() * self.gradient_accumulation_steps),
+                                "reward": float(rewards.mean().item()),
+                                "valid": float(reward_outputs["ok_mask"].float().mean().item()),
+                            },
+                            refresh=False,
+                        )
+                    progress.update(1)
+
+                    if self.dist_ctx.is_main and global_step % self.log_steps == 0:
+                        metrics_path = self.metrics_dir / "train_metrics.jsonl"
+                        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+                        with metrics_path.open("a", encoding="utf-8") as handle:
+                            handle.write(
+                                json.dumps(
+                                    {
+                                        "step": global_step,
+                                        "loss": float(loss.item() * self.gradient_accumulation_steps),
+                                        "mean_reward": float(rewards.mean().item()),
+                                        "valid_ratio": float(reward_outputs["ok_mask"].float().mean().item()),
+                                    },
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            )
+
+                    if self.save_steps > 0 and global_step % self.save_steps == 0:
+                        self._save_checkpoint(global_step)
+                    if eval_loader is not None and self.eval_steps > 0 and global_step % self.eval_steps == 0:
+                        metrics = self._evaluate(eval_loader)
+                        if self.dist_ctx.is_main:
+                            with (self.metrics_dir / "eval_metrics.jsonl").open("a", encoding="utf-8") as handle:
+                                handle.write(json.dumps({"step": global_step, **metrics}, ensure_ascii=False) + "\n")
+
+        if (len(train_loader) % self.gradient_accumulation_steps) != 0:
+            torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm)
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            global_step += 1
+        self._save_checkpoint(global_step)

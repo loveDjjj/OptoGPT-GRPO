@@ -34,8 +34,16 @@ tmm:
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
+  device: auto
+  cpu_threads: 16
   # 单次送入 TMM 的结构数量；正式生成时按 chunk 分批跑，避免整 bucket 一次性占满显存/内存。
   batch_size: 2048
+
+distributed:
+  enabled: false
+  timeout_minutes: 30
+  # 当前先按 layer bucket 在 rank 间 round-robin 分配，保证 bucket 内全局唯一不跨 rank 破坏。
+  shard_mode: layer_bucket
 
 shards:
   # 正式生成默认每 5w 条写一个 parquet shard，便于服务器分片搬运与读取。

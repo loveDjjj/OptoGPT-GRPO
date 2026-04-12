@@ -54,8 +54,20 @@ def test_build_trainer_components_and_load_parquet_records(tmp_path: Path):
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
         max_steps=1,
+        gradient_accumulation_steps=2,
+        dataloader_num_workers=1,
+        dataloader_pin_memory=True,
+        dataloader_persistent_workers=True,
+        ddp_find_unused_parameters=False,
+        save_total_limit=2,
     )
     assert trainer is not None
+    assert trainer.args.gradient_accumulation_steps == 2
+    assert trainer.args.dataloader_num_workers == 1
+    assert trainer.args.dataloader_pin_memory is True
+    assert trainer.args.dataloader_persistent_workers is True
+    assert trainer.args.ddp_find_unused_parameters is False
+    assert trainer.args.save_total_limit == 2
     batch = next(iter(trainer.get_train_dataloader()))
     assert batch["spectra"].shape == (1, 2048)
     train_result = trainer.train()

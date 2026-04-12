@@ -1,0 +1,26 @@
+data:
+  dataset_dir: outputs/our_work/data_gen/v1
+  vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json
+  num_workers: 10
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+
+training:
+  output_dir: outputs/our_work/pretrain/a100_4gpu
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  gradient_accumulation_steps: 2
+  num_train_epochs: 5
+  max_steps: null
+  learning_rate: 5.0e-4
+  bf16: true
+  tf32: true
+  logging_steps: 25
+  eval_steps: 250
+  save_steps: 250
+  save_total_limit: 4
+
+distributed:
+  backend: nccl
+  ddp_find_unused_parameters: false

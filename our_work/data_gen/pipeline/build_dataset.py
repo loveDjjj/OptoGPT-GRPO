@@ -64,6 +64,8 @@ def _write_split_shards(
     split_records: dict[str, list[dict[str, Any]]],
     *,
     records_per_shard: int,
+    shard_prefix: str = "",
+    split_manifest_name: str = "split_manifest.json",
 ) -> dict[str, list[str]]:
     base_dir = Path(output_dir)
     shard_dir = base_dir / "shards"
@@ -75,11 +77,11 @@ def _write_split_shards(
             chunk = records[start : start + records_per_shard]
             if not chunk:
                 continue
-            shard_name = f"shard-{shard_index:05d}.parquet"
+            shard_name = f"{shard_prefix}shard-{shard_index:05d}.parquet"
             write_records_to_parquet(shard_dir / shard_name, chunk)
             split_manifest[split_name].append(shard_name)
             shard_index += 1
-    write_split_manifest(base_dir / "splits" / "split_manifest.json", split_manifest)
+    write_split_manifest(base_dir / "splits" / split_manifest_name, split_manifest)
     return split_manifest
 
 
@@ -95,6 +97,7 @@ def build_small_dataset(
     tmm_batch_size: int | None = None,
     max_duplicate_retry: int | None = None,
     sampling_device: str = "auto",
+    tmm_device: str | None = None,
     num_points: int,
     wavelength_range_um: tuple[float, float],
     incident_angle: float = 0.0,
@@ -106,6 +109,9 @@ def build_small_dataset(
     val_ratio: float = 0.0,
     seed: int = 42,
     show_progress: bool = True,
+    shard_prefix: str = "",
+    split_manifest_name: str = "split_manifest.json",
+    write_vocab: bool = True,
 ) -> dict[str, list[str]]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -115,6 +121,9 @@ def build_small_dataset(
     sampling_batch_size = int(sampling_batch_size or samples_per_bucket)
     tmm_batch_size = int(tmm_batch_size or sampling_batch_size)
     max_duplicate_retry = int(max_duplicate_retry or 1000)
+    resolved_tmm_device = tmm_device or sampling_device
+    if isinstance(resolved_tmm_device, str) and resolved_tmm_device.strip().lower() == "auto":
+        resolved_tmm_device = None
 
     if sampling_batch_size <= 0:
         raise ValueError("sampling_batch_size must be a positive integer")
@@ -177,6 +186,7 @@ def build_small_dataset(
                     polarization=polarization,
                     tolerance=tolerance,
                     complex_dtype=complex_dtype,
+                    device=resolved_tmm_device,
                 )
                 for tokens, reflection, transmission, ok in zip(chunk_groups, reflections, transmissions, ok_mask):
                     if not bool(ok):
@@ -241,9 +251,12 @@ def build_small_dataset(
         output_path,
         split_records,
         records_per_shard=records_per_shard,
+        shard_prefix=shard_prefix,
+        split_manifest_name=split_manifest_name,
     )
-    write_split_manifest(
-        output_path / "vocab" / "vocab.json",
-        {"tokens": vocab.special_tokens + [token for token in vocab.token_to_id.keys() if token not in vocab.special_tokens]},
-    )
+    if write_vocab:
+        write_split_manifest(
+            output_path / "vocab" / "vocab.json",
+            {"tokens": vocab.special_tokens + [token for token in vocab.token_to_id.keys() if token not in vocab.special_tokens]},
+        )
     return split_manifest

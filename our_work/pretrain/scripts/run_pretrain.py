@@ -7,6 +7,7 @@ import sys
 import types
 from pathlib import Path
 
+import torch
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -69,8 +70,21 @@ def build_trainer(
     logging_steps: int = 10,
     eval_steps: int = 50,
     save_steps: int = 50,
+    gradient_accumulation_steps: int = 1,
+    dataloader_num_workers: int = 0,
+    dataloader_prefetch_factor: int | None = None,
+    dataloader_pin_memory: bool = False,
+    dataloader_persistent_workers: bool = False,
+    bf16: bool = False,
+    tf32: bool = False,
+    ddp_find_unused_parameters: bool | None = None,
+    ddp_backend: str | None = None,
+    save_total_limit: int | None = None,
 ) -> Trainer:
     _ensure_trainer_dataset_namespace()
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = bool(tf32)
+        torch.backends.cudnn.allow_tf32 = bool(tf32)
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=per_device_train_batch_size,
@@ -82,6 +96,16 @@ def build_trainer(
         eval_strategy="steps",
         eval_steps=eval_steps,
         save_steps=save_steps,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        dataloader_num_workers=dataloader_num_workers,
+        dataloader_prefetch_factor=dataloader_prefetch_factor,
+        dataloader_pin_memory=dataloader_pin_memory,
+        dataloader_persistent_workers=dataloader_persistent_workers,
+        bf16=bf16,
+        tf32=tf32,
+        ddp_find_unused_parameters=ddp_find_unused_parameters,
+        ddp_backend=ddp_backend,
+        save_total_limit=save_total_limit,
         report_to=[],
         remove_unused_columns=False,
     )
@@ -167,6 +191,16 @@ def main() -> None:
         logging_steps=train_yaml["training"].get("logging_steps", 10),
         eval_steps=train_yaml["training"].get("eval_steps", 50),
         save_steps=train_yaml["training"].get("save_steps", 50),
+        gradient_accumulation_steps=train_yaml["training"].get("gradient_accumulation_steps", 1),
+        dataloader_num_workers=train_yaml["data"].get("num_workers", 0),
+        dataloader_prefetch_factor=train_yaml["data"].get("prefetch_factor"),
+        dataloader_pin_memory=train_yaml["data"].get("pin_memory", False),
+        dataloader_persistent_workers=train_yaml["data"].get("persistent_workers", train_yaml["data"].get("num_workers", 0) > 0),
+        bf16=train_yaml["training"].get("bf16", False),
+        tf32=train_yaml["training"].get("tf32", False),
+        ddp_find_unused_parameters=train_yaml.get("distributed", {}).get("ddp_find_unused_parameters"),
+        ddp_backend=train_yaml.get("distributed", {}).get("backend"),
+        save_total_limit=train_yaml["training"].get("save_total_limit"),
     )
     trainer.train()
 

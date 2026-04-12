@@ -32,6 +32,7 @@ def simulate_structure_batch(
     polarization: int,
     tolerance: float,
     complex_dtype: str,
+    device: str | None = None,
 ) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], np.ndarray]:
     configs = [
         tokens_to_tmm_config(tokens, database_path=database_path)
@@ -43,6 +44,7 @@ def simulate_structure_batch(
         num_points=num_points,
         incident_angle=incident_angle,
         polarization=polarization,
+        device=device,
         complex_dtype=complex_dtype,
     )
     if wavelengths is None:
