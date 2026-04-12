@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from our_work._shared.io.config import load_yaml_config, resolve_repo_path
+from our_work.data_gen.analysis import analyze_dataset
 from our_work.data_gen.pipeline.build_dataset import build_small_dataset
 from our_work.data_gen.pipeline.material_registry import build_material_registry
 from our_work._shared.utils.seed import set_global_seed
@@ -66,6 +67,27 @@ def resolve_data_gen_runtime_config(config: dict) -> dict:
     }
 
 
+def resolve_analysis_runtime_config(config: dict) -> dict:
+    analysis_config = config.get("analysis", {})
+    spectrum_config = analysis_config.get("spectrum", {})
+    structure_config = analysis_config.get("structure", {})
+    return {
+        "enabled": bool(analysis_config.get("enabled", True)),
+        "auto_after_build": bool(analysis_config.get("auto_after_build", True)),
+        "output_dir": analysis_config.get("output_dir"),
+        "batch_size": int(analysis_config.get("batch_size", 4096)),
+        "scopes": list(analysis_config.get("scopes", ["all", "train", "val", "test"])),
+        "structure_enabled": bool(structure_config.get("enabled", True)),
+        "spectrum_enabled": bool(spectrum_config.get("enabled", True)),
+        "spectrum_device": str(spectrum_config.get("device", "auto")),
+        "pca_components": int(spectrum_config.get("pca_components", 8)),
+        "cluster_count": int(spectrum_config.get("cluster_count", 16)),
+        "cluster_fit_samples": int(spectrum_config.get("cluster_fit_samples", 50000)),
+        "cluster_iterations": int(spectrum_config.get("cluster_iterations", 20)),
+        "scatter_max_points": int(spectrum_config.get("scatter_max_points", 20000)),
+    }
+
+
 def _assign_layer_counts(layer_counts: list[int], *, rank: int, world_size: int, shard_mode: str) -> list[int]:
     if world_size <= 1:
         return list(layer_counts)
@@ -115,14 +137,15 @@ def merge_rank_split_manifests(output_dir: str | Path, *, world_size: int) -> di
     return merged
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Build a small our_work spectral dataset.")
     parser.add_argument("--config", required=True, help="Path to the dataset YAML config.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     config_path = resolve_repo_path(args.config, project_root=PROJECT_ROOT)
     config = load_yaml_config(config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
     runtime = resolve_data_gen_runtime_config(config)
+    analysis_runtime = resolve_analysis_runtime_config(config)
     dist_requested = runtime["distributed_enabled"] and int(os.environ.get("WORLD_SIZE", "1")) > 1
     local_rank = int(os.environ.get("LOCAL_RANK", "0")) if dist_requested else 0
     dist_device_name = _resolve_rank_device(runtime["tmm_device"], local_rank=local_rank, dist_enabled=dist_requested)
@@ -172,6 +195,32 @@ def main() -> None:
             merge_rank_split_manifests(config["paths"]["output_dir"], world_size=world_size)
         barrier()
         cleanup_distributed()
+    if (
+        analysis_runtime["enabled"]
+        and analysis_runtime["auto_after_build"]
+        and (dist_ctx is None or dist_ctx.is_main)
+    ):
+        analysis_output_dir = (
+            resolve_repo_path(analysis_runtime["output_dir"], project_root=PROJECT_ROOT)
+            if analysis_runtime["output_dir"]
+            else Path(config["paths"]["output_dir"]) / "analysis"
+        )
+        analyze_dataset(
+            dataset_dir=config["paths"]["output_dir"],
+            scopes=analysis_runtime["scopes"],
+            output_dir=analysis_output_dir,
+            batch_size=analysis_runtime["batch_size"],
+            wavelength_min=float(config["tmm"]["wavelength_range_um"][0]),
+            wavelength_max=float(config["tmm"]["wavelength_range_um"][1]),
+            pca_components=analysis_runtime["pca_components"],
+            cluster_count=analysis_runtime["cluster_count"],
+            cluster_fit_samples=analysis_runtime["cluster_fit_samples"],
+            cluster_iterations=analysis_runtime["cluster_iterations"],
+            scatter_max_points=analysis_runtime["scatter_max_points"],
+            device=analysis_runtime["spectrum_device"],
+            enable_structure_analysis=analysis_runtime["structure_enabled"],
+            enable_spectrum_analysis=analysis_runtime["spectrum_enabled"],
+        )
 
 
 if __name__ == "__main__":

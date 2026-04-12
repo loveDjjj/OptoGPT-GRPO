@@ -131,7 +131,7 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 可选：
 
 - `matplotlib`
-  仅在需要画图时使用。
+  `our_work/data_gen` 自动分析和评测绘图都会用到。
 
 ## our_work 服务器部署与运行
 本节对应仓库根目录下的 [our_work](/O:/Optics%20Code/OptoGPT-GRPO/our_work) 独立数据生成、预训练与评测链路。当前默认配置已经改成服务器可直接运行的版本，不再依赖必须从仓库根目录启动；不过为了排查日志和产物更直观，仍然建议先 `cd` 到仓库根目录再执行。
@@ -205,6 +205,11 @@ torch 2.x.x cuda True
   - `tmm.cpu_threads: 16`
   - `tmm.batch_size: 2048`
   - `tmm.num_points: 1024`
+  - `analysis.enabled: true`
+  - `analysis.auto_after_build: true`
+  - `analysis.scopes: [all, train, val, test]`
+  - `analysis.spectrum.pca_components: 8`
+  - `analysis.spectrum.cluster_count: 16`
 - `base_train.yaml`
   - `data.dataset_dir: outputs/our_work/data_gen/v1`
   - `data.vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json`
@@ -339,6 +344,22 @@ tmm:
   tolerance: 0.001
   complex_dtype: complex128
   batch_size: 2048
+
+analysis:
+  enabled: true
+  auto_after_build: true
+  batch_size: 4096
+  scopes: [all, train, val, test]
+  structure:
+    enabled: true
+  spectrum:
+    enabled: true
+    device: auto
+    pca_components: 8
+    cluster_count: 16
+    cluster_fit_samples: 50000
+    cluster_iterations: 20
+    scatter_max_points: 20000
 ```
 
 ```bash
@@ -357,18 +378,27 @@ data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_cou
 - `outputs/our_work/data_gen/v1/shards/shard-00000.parquet`
 - `outputs/our_work/data_gen/v1/splits/split_manifest.json`
 - `outputs/our_work/data_gen/v1/vocab/vocab.json`
+- `outputs/our_work/data_gen/v1/analysis/all/structure_material_by_layer.png`
+- `outputs/our_work/data_gen/v1/analysis/all/structure_thickness_by_layer.png`
+- `outputs/our_work/data_gen/v1/analysis/all/spectrum_mean_std.png`
+- `outputs/our_work/data_gen/v1/analysis/all/spectrum_pca_scatter.png`
+- `outputs/our_work/data_gen/v1/analysis/all/spectrum_cluster_sizes.png`
+- `outputs/our_work/data_gen/v1/analysis/all/spectrum_cluster_representatives.png`
 
 说明：
 
 - 结构候选现在按 `sampling.batch_size` 在 GPU/CPU 上分块生成。
 - TMM 光谱计算按 `tmm.batch_size` 分批执行，不会再把整 bucket 一次性送进显存/内存。
 - bucket 内仍然保持全局严格唯一；重复结构会被丢弃并自动补采。
+- 数据生成结束后默认会自动跑数据集分析，覆盖 `all/train/val/test`。
+- 光谱分析使用拼接后的 `[R..., T...]` 做标准化、PCA 和聚类；结构分析会把材料和厚度拆开统计。
 
 你可以检查：
 
 ```bash
 ls outputs/our_work/data_gen/v1/shards | head
 cat outputs/our_work/data_gen/v1/splits/split_manifest.json
+ls outputs/our_work/data_gen/v1/analysis/all
 ```
 
 4 卡 A100 正式命令：
@@ -390,6 +420,46 @@ torchrun --nproc_per_node=8 our_work/data_gen/scripts/run_build_dataset.py --con
 - 当前多卡数据生成先按 `layer bucket` 在 rank 之间分配，保证 bucket 内全局唯一不会被跨 rank 破坏。
 - `4` 卡时 6 个 bucket 会分到 4 个 rank。
 - `8` 卡时会有空闲 rank，这是当前版本为了保证唯一性和正确性做的保守实现。
+
+#### Step 4.1: 单独运行数据集分析
+
+如果你已经有现成数据集，也可以不重新生成，直接单独跑分析：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python our_work/data_gen/scripts/run_analyze_dataset.py \
+  --dataset-dir outputs/our_work/data_gen/v1 \
+  --split all \
+  --wavelength-min 2.0 \
+  --wavelength-max 15.0 \
+  --device auto
+```
+
+典型终端输出：
+
+```text
+# 命令本身默认安静执行，完成后会在 analysis 目录下写出 PNG / JSON 结果
+```
+
+如果只分析某些 shard 文件：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python our_work/data_gen/scripts/run_analyze_dataset.py \
+  --shard-path outputs/our_work/data_gen/v1/shards/shard-00000.parquet \
+  --shard-path outputs/our_work/data_gen/v1/shards/shard-00001.parquet \
+  --output-dir outputs/our_work/data_gen/custom_analysis \
+  --wavelength-min 2.0 \
+  --wavelength-max 15.0 \
+  --device cpu
+```
+
+该步骤完成后应出现：
+
+- `outputs/our_work/data_gen/v1/analysis/analysis_manifest.json`
+- `outputs/our_work/data_gen/v1/analysis/<scope>/structure_analysis.json`
+- `outputs/our_work/data_gen/v1/analysis/<scope>/spectrum_analysis.json`
+- 对应 scope 下的结构分布和谱形分析 PNG
 
 #### Step 5: 启动预训练
 

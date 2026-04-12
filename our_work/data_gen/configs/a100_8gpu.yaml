@@ -42,3 +42,20 @@ splits:
 
 logging:
   show_progress_bar: true
+
+analysis:
+  enabled: true
+  auto_after_build: true
+  output_dir: null
+  batch_size: 4096
+  scopes: [all, train, val, test]
+  structure:
+    enabled: true
+  spectrum:
+    enabled: true
+    device: auto
+    pca_components: 8
+    cluster_count: 16
+    cluster_fit_samples: 50000
+    cluster_iterations: 20
+    scatter_max_points: 20000

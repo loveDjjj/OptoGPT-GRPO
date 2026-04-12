@@ -1,59 +1,88 @@
 # 本次修改摘要
 
 ## 需求
-- 修复上一轮 `our_work/rl` code review 中指出的 4 个问题：
-  - checkpoint 按字符串排序可能选错
-  - `distributed.backend` 配置未生效
-  - checkpoint 未保存 optimizer/global step/scheduler 等恢复状态
-  - 训练阶段未显式切回 `train()`
+- 为 `our_work/data_gen` 增加自动数据集分析与独立分析 CLI。
+- 分析两大方向：
+  - 结构分布：每层材料分布、每层厚度分布
+  - 光谱谱形：均值/波动、PCA 覆盖、聚类代表谱形
+- 分析需要在数据生成完成后自动执行，并支持单独传参运行。
 
 ## 实际修改
-- `utils/dist.py`
-  - `init_distributed(...)` 新增 `backend` 参数。
-  - 若显式传入 backend，则按配置值初始化进程组；否则维持原自动选择逻辑。
-- `our_work/rl/scripts/run_grpo.py`
-  - 新增 `resolve_checkpoint_dir(...)`，按 `checkpoint-<int>` 的数值顺序选择最新 checkpoint。
-  - `main(...)` 改为支持 `argv` 参数，便于测试。
-  - 启动分布式时显式把 `distributed.backend` 透传给 `init_distributed(...)`。
-  - 支持 `training.resume_from_checkpoint`。
-  - 若设置了 resume checkpoint，则优先从该目录恢复模型。
-- `our_work/rl/trainer.py`
-  - 新增：
-    - `self.scheduler`（恒定 LR Lambda 调度器）
-    - `self.global_step`
-    - `self.resume_epoch`
-    - `self.resume_batch_index`
-    - `resume_checkpoint` 入口参数
-  - `_save_checkpoint(...)` 现在会保存：
-    - `optimizer.pt`
-    - `scheduler.pt`
-    - `trainer_state.json`
-  - 新增 `_load_checkpoint_state(...)`，恢复 optimizer / scheduler / global_step / epoch / batch 位置。
-  - `train(...)` 开始时显式调用：
-    - `self.raw_model.train()`
-    - `self.model.train()`
-  - `_evaluate(...)` 会在评测后恢复之前的训练模式。
-  - 训练循环支持从保存的 epoch / batch 位置继续执行。
-- `tests/our_work/rl/test_run_grpo.py`
-  - 新增 checkpoint 数值排序测试。
-  - 新增 `distributed.backend` 透传测试。
-- `tests/our_work/rl/test_trainer.py`
-  - 新增 checkpoint 保存 optimizer / scheduler / trainer_state 测试。
-  - 新增 checkpoint 恢复训练进度测试。
-  - 新增 `_evaluate(...)` 后恢复 train mode 的测试。
+- `our_work/data_gen/analysis/`
+  - 新增分析模块：
+    - `io.py`
+    - `plots.py`
+    - `structure_analysis.py`
+    - `spectrum_analysis.py`
+    - `pipeline.py`
+    - `__init__.py`
+- `our_work/data_gen/scripts/run_analyze_dataset.py`
+  - 新增独立 CLI。
+  - 支持：
+    - `--dataset-dir`
+    - `--shard-path`
+    - `--split`
+    - `--output-dir`
+    - `--batch-size`
+    - `--wavelength-min`
+    - `--wavelength-max`
+    - `--pca-components`
+    - `--cluster-count`
+    - `--cluster-fit-samples`
+    - `--cluster-iterations`
+    - `--scatter-max-points`
+    - `--device`
+    - `--disable-structure-analysis`
+    - `--disable-spectrum-analysis`
+- `our_work/data_gen/scripts/run_build_dataset.py`
+  - 新增 `resolve_analysis_runtime_config(...)`
+  - 数据生成完成后，默认自动调用 `analyze_dataset(...)`
+- `our_work/data_gen/configs/dataset_v1.yaml`
+  - 新增 `analysis` 配置段
+- `our_work/data_gen/configs/a100_4gpu.yaml`
+  - 新增 `analysis` 配置段
+- `our_work/data_gen/configs/a100_8gpu.yaml`
+  - 新增 `analysis` 配置段
+- `tests/our_work/data_gen/test_analysis.py`
+  - 新增 end-to-end 分析产物测试
+  - 新增独立 CLI 测试
+- `tests/our_work/data_gen/test_build_dataset.py`
+  - 新增分析配置解析测试
+  - 新增自动触发分析测试
+- `our_work/_shared/utils/seed.py`
+  - `set_global_seed(...)` 增加 `rank_offset`
+  - 兼容数据生成入口的分布式调用
+- `README.md`
+  - 新增自动分析说明
+  - 新增独立分析命令示例
+  - 新增默认分析配置说明和分析产物路径
 - `docs/notes.md`
-  - 覆盖为本次修复摘要。
+  - 覆盖为本次实现摘要
 - `docs/logs/2026-04.md`
-  - 追加本次修复记录。
+  - 追加本次实现记录
+
+## 实现方法
+- 结构分布
+  - 每层材料频次热图
+  - 每层厚度频次热图
+  - 全局材料条形图
+  - 全局厚度条形图
+- 光谱谱形
+  - 对拼接后的 `[R..., T...]` 做整体均值/标准差分析
+  - 在 GPU/CPU 上按 batch 计算 PCA
+  - 用 PCA embedding 做 KMeans 聚类
+  - 输出 cluster 大小分布图、PCA 散点图、代表谱形图
 
 ## 说明
-- 这里的 scheduler 采用恒定 LR `LambdaLR(lambda _: 1.0)`，目的是先把恢复链路补全，不改变现有学习率行为。
-- `resume_from_checkpoint` 现在已经可用；若不设置，仍默认从 `model.checkpoint_dir` 冷启动。
+- 结构统计主要是离散计数，当前实现以 CPU 聚合为主。
+- 光谱分析的重矩阵计算（标准化、协方差、PCA、聚类）优先走 PyTorch，可配置 `device`。
+- 自动分析默认会覆盖 `all + train + val + test`；空 split 会跳过并写 `skipped_reason`，不会报错。
 
 ## 验证
-- `python -m pytest tests/our_work/rl -q --basetemp C:/Users/15450/.codex/memories/pytest-our-work-rl-fixes`
-- `python -m pytest tests/our_work -q --basetemp C:/Users/15450/.codex/memories/pytest-our-work-after-rl-fixes`
-- 结果：通过
+- `python -m compileall our_work/data_gen tests/our_work/data_gen README.md`
+- `python -m pytest tests/our_work/data_gen -q --basetemp C:/Users/15450/.codex/memories/pytest-data-analysis`
+- `python -m pytest tests/our_work -q --basetemp C:/Users/15450/.codex/memories/pytest-our-work-with-analysis`
+  - 结果：新增 `data_gen` 分析相关测试通过；全量 `tests/our_work` 在当前 Windows 环境下命中了既有的 `pretrain` 多进程 DataLoader worker 启动问题，不属于这次分析功能本身
 
 ## Git
 - branch: `main`
