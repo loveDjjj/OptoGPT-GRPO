@@ -76,15 +76,18 @@ def resolve_analysis_runtime_config(config: dict) -> dict:
         "auto_after_build": bool(analysis_config.get("auto_after_build", True)),
         "output_dir": analysis_config.get("output_dir"),
         "batch_size": int(analysis_config.get("batch_size", 4096)),
-        "scopes": list(analysis_config.get("scopes", ["all", "train", "val", "test"])),
+        "scopes": list(analysis_config.get("scopes", ["all"])),
         "structure_enabled": bool(structure_config.get("enabled", True)),
         "spectrum_enabled": bool(spectrum_config.get("enabled", True)),
+        "spectrum_engine": str(spectrum_config.get("engine", "rapids")),
         "spectrum_device": str(spectrum_config.get("device", "auto")),
         "pca_components": int(spectrum_config.get("pca_components", 8)),
+        "pca_fit_samples": int(spectrum_config.get("pca_fit_samples", spectrum_config.get("cluster_fit_samples", 50000))),
         "cluster_count": int(spectrum_config.get("cluster_count", 16)),
         "cluster_fit_samples": int(spectrum_config.get("cluster_fit_samples", 50000)),
         "cluster_iterations": int(spectrum_config.get("cluster_iterations", 20)),
         "scatter_max_points": int(spectrum_config.get("scatter_max_points", 20000)),
+        "save_split_analysis": bool(spectrum_config.get("save_split_analysis", False)),
     }
 
 
@@ -207,12 +210,14 @@ def main(argv: list[str] | None = None) -> None:
         )
         analyze_dataset(
             dataset_dir=config["paths"]["output_dir"],
-            scopes=analysis_runtime["scopes"],
+            scopes=analysis_runtime["scopes"] if analysis_runtime["save_split_analysis"] else ["all"],
             output_dir=analysis_output_dir,
             batch_size=analysis_runtime["batch_size"],
             wavelength_min=float(config["tmm"]["wavelength_range_um"][0]),
             wavelength_max=float(config["tmm"]["wavelength_range_um"][1]),
+            engine=analysis_runtime["spectrum_engine"],
             pca_components=analysis_runtime["pca_components"],
+            pca_fit_samples=analysis_runtime["pca_fit_samples"],
             cluster_count=analysis_runtime["cluster_count"],
             cluster_fit_samples=analysis_runtime["cluster_fit_samples"],
             cluster_iterations=analysis_runtime["cluster_iterations"],

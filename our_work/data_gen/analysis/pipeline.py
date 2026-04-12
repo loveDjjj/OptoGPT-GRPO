@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Sequence
 
 from .io import (
+    count_total_rows,
     derive_materials_and_thicknesses,
-    iter_record_batches,
+    iter_spectrum_frames,
+    iter_structure_batches,
     load_vocab_tokens,
     resolve_analysis_scopes,
     resolve_custom_scope,
@@ -25,7 +27,9 @@ def analyze_dataset(
     batch_size: int = 4096,
     wavelength_min: float | None = None,
     wavelength_max: float | None = None,
+    engine: str = "rapids",
     pca_components: int = 8,
+    pca_fit_samples: int = 50000,
     cluster_count: int = 16,
     cluster_fit_samples: int = 50000,
     cluster_iterations: int = 20,
@@ -63,28 +67,25 @@ def analyze_dataset(
         if enable_structure_analysis:
             scope_summary["structure"] = analyze_structure_distribution(
                 scope_name=scope_name,
-                batches=iter_record_batches(
+                batches=iter_structure_batches(
                     shard_paths=scope_shards,
                     batch_size=int(batch_size),
-                    columns=["sample_id", "layer_count", "materials", "thickness_nm"],
                 ),
                 material_names=material_names,
                 thickness_values_nm=thickness_values_nm,
                 output_dir=scope_output_dir,
             )
         if enable_spectrum_analysis:
-            batch_factory = lambda: iter_record_batches(
-                shard_paths=scope_shards,
-                batch_size=int(batch_size),
-                columns=["sample_id", "layer_count", "materials", "spectrum_rt"],
-            )
             scope_summary["spectrum"] = analyze_spectrum_distribution(
                 scope_name=scope_name,
-                batch_factory=batch_factory,
+                frame_factory=lambda: iter_spectrum_frames(shard_paths=scope_shards),
+                estimated_total_rows=count_total_rows(scope_shards),
                 output_dir=scope_output_dir,
                 wavelength_min=wavelength_min,
                 wavelength_max=wavelength_max,
+                engine=engine,
                 pca_components=int(pca_components),
+                pca_fit_samples=int(pca_fit_samples),
                 cluster_count=int(cluster_count),
                 cluster_fit_samples=int(cluster_fit_samples),
                 cluster_iterations=int(cluster_iterations),

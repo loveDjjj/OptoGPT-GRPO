@@ -13,7 +13,7 @@ from .plots import save_bar_chart, save_material_heatmap, save_thickness_heatmap
 def analyze_structure_distribution(
     *,
     scope_name: str,
-    batches: Iterable[list[dict]],
+    batches: Iterable[dict[str, object]],
     material_names: Sequence[str],
     thickness_values_nm: Sequence[int],
     output_dir: str | Path,
@@ -27,11 +27,15 @@ def analyze_structure_distribution(
     sample_count = 0
 
     for batch in batches:
-        for record in batch:
+        sample_ids = batch["sample_id"]
+        layer_counts = batch["layer_count"]
+        materials_rows = batch["materials"]
+        thickness_rows = batch["thickness_nm"]
+        for _, layer_count, materials, thicknesses in zip(sample_ids, layer_counts, materials_rows, thickness_rows):
             sample_count += 1
-            materials = list(record.get("materials", []))
-            thicknesses = [int(value) for value in record.get("thickness_nm", [])]
-            layer_count_max = max(layer_count_max, len(materials))
+            materials = list(materials)
+            thicknesses = [int(value) for value in thicknesses]
+            layer_count_max = max(layer_count_max, int(layer_count))
             for layer_index, material in enumerate(materials):
                 material_counts_by_layer[layer_index][material] += 1
                 global_material_counts[material] += 1

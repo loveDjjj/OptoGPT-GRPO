@@ -47,15 +47,18 @@ analysis:
   enabled: true
   auto_after_build: true
   output_dir: null
-  batch_size: 4096
-  scopes: [all, train, val, test]
+  batch_size: 16384
+  scopes: [all]
   structure:
     enabled: true
   spectrum:
     enabled: true
     device: auto
+    engine: rapids
     pca_components: 8
+    pca_fit_samples: 50000
     cluster_count: 16
     cluster_fit_samples: 50000
     cluster_iterations: 20
     scatter_max_points: 20000
+    save_split_analysis: false

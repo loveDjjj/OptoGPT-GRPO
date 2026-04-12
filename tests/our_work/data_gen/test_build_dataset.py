@@ -128,6 +128,14 @@ def test_resolve_analysis_runtime_config_reads_spectrum_settings():
     assert runtime["cluster_count"] == 5
 
 
+def test_resolve_analysis_runtime_config_defaults_to_all_scope_only():
+    runtime = resolve_analysis_runtime_config({"analysis": {}})
+
+    assert runtime["scopes"] == ["all"]
+    assert runtime["spectrum_engine"] == "rapids"
+    assert runtime["save_split_analysis"] is False
+
+
 def test_assign_layer_counts_round_robins_layer_buckets():
     layer_counts = [5, 6, 7, 8, 9, 10]
 

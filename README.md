@@ -207,7 +207,7 @@ torch 2.x.x cuda True
   - `tmm.num_points: 1024`
   - `analysis.enabled: true`
   - `analysis.auto_after_build: true`
-  - `analysis.scopes: [all, train, val, test]`
+  - `analysis.scopes: [all]`
   - `analysis.spectrum.pca_components: 8`
   - `analysis.spectrum.cluster_count: 16`
 - `base_train.yaml`
@@ -320,7 +320,7 @@ python -c "import yaml, pathlib; cfg=yaml.safe_load(pathlib.Path('our_work/data_
 
 ```text
 sampling = {'device': 'auto', 'batch_size': 65536, 'max_duplicate_retry': 1000}
-tmm.batch_size = 2048
+tmm.batch_size = 4096
 ```
 
 默认配置片段如下：
@@ -346,23 +346,26 @@ tmm:
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
-  batch_size: 2048
+  batch_size: 4096
 
 analysis:
   enabled: true
   auto_after_build: true
-  batch_size: 4096
-  scopes: [all, train, val, test]
+  batch_size: 8192
+  scopes: [all]
   structure:
     enabled: true
   spectrum:
     enabled: true
     device: auto
+    engine: rapids
     pca_components: 8
+    pca_fit_samples: 50000
     cluster_count: 16
     cluster_fit_samples: 50000
     cluster_iterations: 20
     scatter_max_points: 20000
+    save_split_analysis: false
 ```
 
 ```bash
@@ -373,7 +376,7 @@ python our_work/data_gen/scripts/run_build_dataset.py --config our_work/data_gen
 典型终端输出：
 
 ```text
-data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_count=5, bucket_kept=98304, bucket_target=500000, sample_batch=65536, tmm_batch=2048, duplicates_skipped=..., valid_kept=...]
+data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_count=5, bucket_kept=98304, bucket_target=500000, sample_batch=65536, tmm_batch=4096, duplicates_skipped=..., valid_kept=...]
 ```
 
 该步骤完成后应出现：
@@ -393,8 +396,10 @@ data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_cou
 - 结构候选现在按 `sampling.batch_size` 在 GPU/CPU 上分块生成。
 - TMM 光谱计算按 `tmm.batch_size` 分批执行，不会再把整 bucket 一次性送进显存/内存。
 - bucket 内仍然保持全局严格唯一；重复结构会被丢弃并自动补采。
-- 数据生成结束后默认会自动跑数据集分析，覆盖 `all/train/val/test`。
+- 数据生成结束后默认只自动跑 `all` 分析；`train/val/test` 建议通过独立 CLI 按需补跑。
+- 当前默认只自动分析 `all`，避免对 `train/val/test` 重复扫描导致耗时过长。
 - 光谱分析使用拼接后的 `[R..., T...]` 做标准化、PCA 和聚类；结构分析会把材料和厚度拆开统计。
+- 光谱分析优先走 RAPIDS（`cudf + cuml`），把 PCA / 聚类主路径放在 GPU 上。
 
 你可以检查：
 
@@ -457,6 +462,18 @@ python our_work/data_gen/scripts/run_analyze_dataset.py \
   --wavelength-min 2.0 \
   --wavelength-max 15.0 \
   --device cpu
+```
+
+如果你还想单独分析 `train / val / test`，直接改 `--split` 即可，例如：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python our_work/data_gen/scripts/run_analyze_dataset.py \
+  --dataset-dir outputs/our_work/data_gen/v1 \
+  --split train \
+  --wavelength-min 2.0 \
+  --wavelength-max 15.0 \
+  --device auto
 ```
 
 该步骤完成后应出现：
