@@ -3,7 +3,7 @@ seed: 42
 paths:
   # 相对路径会由入口脚本固定解析到仓库根目录，避免依赖启动时的 cwd。
   database_dir: database
-  # 服务器默认输出到仓库根下的统一 outputs 目录；如需落到数据盘，可改绝对路径。
+  # 默认按单卡 A100 80G 输出到仓库根下统一 outputs 目录；多卡可改用 a100_4gpu/a100_8gpu.yaml。
   output_dir: outputs/our_work/data_gen/v1
 
 data:
@@ -18,9 +18,10 @@ data:
     step: 10
 
 sampling:
-  # 候选结构采样设备；`auto` 会在有 CUDA 时优先使用 GPU。
+  # 单卡默认用 `auto`；多卡时会按各 rank 自动解析到对应 cuda:<local_rank>。
   device: auto
-  # 单次 GPU 采样的候选结构数量。
+  # 单卡 A100 80G 默认候选采样 batch。
+  # 多卡可参考 a100_4gpu.yaml / a100_8gpu.yaml 保持或上调。
   batch_size: 65536
   # 若连续多轮补采仍几乎全部重复，达到该上限后直接报错。
   max_duplicate_retry: 1000
@@ -33,13 +34,17 @@ tmm:
   incident_angle: 0.0
   polarization: 0
   tolerance: 0.001
+  # 单卡默认保守使用 complex128；多卡吞吐优先时可切到 complex64。
   complex_dtype: complex128
   device: auto
+  # 当前机器为单卡 A100 + 16 CPU，因此默认把 CPU 辅助线程固定到 16。
+  # 多卡时请按每卡 CPU 重新分配，例如 4 卡/64 CPU 可继续用 16。
   cpu_threads: 16
-  # 单次送入 TMM 的结构数量；正式生成时按 chunk 分批跑，避免整 bucket 一次性占满显存/内存。
-  batch_size: 2048
+  # 单卡 A100 80G 默认 TMM chunk；多卡吞吐优先可参考 a100_4gpu/a100_8gpu.yaml。
+  batch_size: 4096
 
 distributed:
+  # 默认单卡关闭分布式；多卡请改为 true，或直接使用 a100_4gpu/a100_8gpu.yaml。
   enabled: false
   timeout_minutes: 30
   # 当前先按 layer bucket 在 rank 间 round-robin 分配，保证 bucket 内全局唯一不跨 rank 破坏。

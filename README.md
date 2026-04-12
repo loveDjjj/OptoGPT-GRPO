@@ -190,7 +190,7 @@ torch 2.x.x cuda True
 - 强化学习（4 卡）：`our_work/rl/configs/grpo/a100_4gpu.yaml`
 - 强化学习（8 卡）：`our_work/rl/configs/grpo/a100_8gpu.yaml`
 
-当前默认值：
+当前默认值（单卡 A100 80G + 16 CPU）：
 
 - `dataset_v1.yaml`
   - `paths.database_dir: database`
@@ -203,7 +203,7 @@ torch 2.x.x cuda True
   - `sampling.max_duplicate_retry: 1000`
   - `tmm.device: auto`
   - `tmm.cpu_threads: 16`
-  - `tmm.batch_size: 2048`
+  - `tmm.batch_size: 4096`
   - `tmm.num_points: 1024`
   - `analysis.enabled: true`
   - `analysis.auto_after_build: true`
@@ -218,6 +218,8 @@ torch 2.x.x cuda True
   - `data.pin_memory: true`
   - `data.persistent_workers: true`
   - `training.output_dir: outputs/our_work/pretrain/base_train`
+  - `training.per_device_train_batch_size: 16`
+  - `training.per_device_eval_batch_size: 16`
   - `training.gradient_accumulation_steps: 2`
   - `training.max_steps: null`
   - `training.num_train_epochs: 5`
@@ -226,10 +228,11 @@ torch 2.x.x cuda True
 - `base_gpt.yaml`
   - `model.spectrum_dim: 2048`
 - `base_grpo.yaml`
-  - `training.per_device_batch_size: 8`
+  - `training.per_device_batch_size: 16`
   - `rollout.group_size: 4`
-  - `rollout.batch_size: 256`
-  - `reward.tmm.batch_size: 2048`
+  - `rollout.batch_size: 512`
+  - `scoring.batch_size: 1024`
+  - `reward.tmm.batch_size: 4096`
 
 关键约束：
 
@@ -400,6 +403,8 @@ ls outputs/our_work/data_gen/v1/shards | head
 cat outputs/our_work/data_gen/v1/splits/split_manifest.json
 ls outputs/our_work/data_gen/v1/analysis/all
 ```
+
+如果你切到多卡，直接使用专用配置：
 
 4 卡 A100 正式命令：
 

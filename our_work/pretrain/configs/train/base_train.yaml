@@ -1,22 +1,26 @@
 data:
-  # 相对路径会由训练入口固定解析到仓库根目录，避免依赖启动时的 cwd。
+  # 默认是单卡 A100 80G 的基础配置；4卡/8卡请改用 a100_4gpu.yaml / a100_8gpu.yaml。
   dataset_dir: outputs/our_work/data_gen/v1
   vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json
+  # 单卡 A100 + 16 CPU 默认给 dataloader 8 个 worker，避免和主进程争抢过多 CPU。
   num_workers: 8
   prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
 
 training:
-  # 服务器默认把 checkpoint 与 trainer 状态写到统一 outputs 目录。
+  # 单卡默认输出目录；多卡请改用单独 run 目录，避免和其他配置混淆。
   output_dir: outputs/our_work/pretrain/base_train
-  per_device_train_batch_size: 8
-  per_device_eval_batch_size: 8
+  # 单卡 A100 80G 默认每卡 batch 调到 16。
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  # 单卡默认保留适度梯度累积，方便后续无缝切多卡。
   gradient_accumulation_steps: 2
   num_train_epochs: 5
   # 正式训练默认由 epoch 控制；若要快速 smoke，可临时改成小整数。
   max_steps: null
   learning_rate: 5.0e-4
+  # 单卡 A100 默认直接打开 bf16 / tf32；若做数值诊断再手动关闭。
   bf16: true
   tf32: true
   logging_steps: 50
@@ -25,5 +29,6 @@ training:
   save_total_limit: 3
 
 distributed:
+  # 单卡不会实际用到 DDP，这里保留多卡参数是为了后续切 4/8 卡时直接复用。
   backend: nccl
   ddp_find_unused_parameters: false
