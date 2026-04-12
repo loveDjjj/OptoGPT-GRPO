@@ -20,13 +20,19 @@ from our_work.rl.trainer import RLComponents, SpectralGRPOTrainer
 from utils.dist import barrier, cleanup_distributed, init_distributed
 
 
-def load_rl_components(checkpoint_dir: str | Path, device: torch.device) -> RLComponents:
+def resolve_checkpoint_dir(checkpoint_dir: str | Path) -> Path:
     resolved = resolve_repo_path(checkpoint_dir, project_root=PROJECT_ROOT)
     if not (resolved / "config.json").exists():
-        checkpoint_dirs = sorted(child for child in resolved.iterdir() if child.is_dir() and child.name.startswith("checkpoint-"))
+        checkpoint_dirs = [child for child in resolved.iterdir() if child.is_dir() and child.name.startswith("checkpoint-")]
         if not checkpoint_dirs:
             raise FileNotFoundError(f"No checkpoint directory found under: {resolved}")
+        checkpoint_dirs.sort(key=lambda child: int(child.name.split("-")[-1]))
         resolved = checkpoint_dirs[-1]
+    return resolved
+
+
+def load_rl_components(checkpoint_dir: str | Path, device: torch.device) -> RLComponents:
+    resolved = resolve_checkpoint_dir(checkpoint_dir)
     raw_model = SpectralGPTForCausalLM.from_pretrained(resolved)
     raw_model.to(device)
     tokenizer = SpectralStructureTokenizer.from_pretrained(resolved)
@@ -39,10 +45,10 @@ def load_rl_components(checkpoint_dir: str | Path, device: torch.device) -> RLCo
     return RLComponents(model=model, raw_model=raw_model, tokenizer=tokenizer)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run lightweight GRPO for our_work spectral model.")
     parser.add_argument("--config", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     config_path = resolve_repo_path(args.config, project_root=PROJECT_ROOT)
     config = load_yaml_config(config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
@@ -56,8 +62,14 @@ def main() -> None:
     else:
         device = torch.device(requested_device)
 
-    dist_ctx = init_distributed(device=device, timeout_minutes=int(config.get("distributed", {}).get("timeout_minutes", 30)))
-    components = load_rl_components(config["model"]["checkpoint_dir"], device=dist_ctx.device)
+    distributed_cfg = config.get("distributed", {})
+    dist_ctx = init_distributed(
+        device=device,
+        timeout_minutes=int(distributed_cfg.get("timeout_minutes", 30)),
+        backend=distributed_cfg.get("backend"),
+    )
+    resume_checkpoint = config["training"].get("resume_from_checkpoint")
+    components = load_rl_components(resume_checkpoint or config["model"]["checkpoint_dir"], device=dist_ctx.device)
 
     train_dataset = load_rl_split_records(
         config["data"]["dataset_dir"],
@@ -75,6 +87,7 @@ def main() -> None:
         config=config,
         run_dir=config["training"]["output_dir"],
         dist_ctx=dist_ctx,
+        resume_checkpoint=resolve_checkpoint_dir(resume_checkpoint) if resume_checkpoint else None,
     )
     trainer.train(train_dataset=train_dataset, eval_dataset=eval_dataset)
 

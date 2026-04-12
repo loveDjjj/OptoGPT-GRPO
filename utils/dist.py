@@ -44,7 +44,11 @@ def _choose_backend(device: torch.device) -> str:
     return "gloo"
 
 
-def init_distributed(device: torch.device, timeout_minutes: int = 30) -> DistributedContext:
+def init_distributed(
+    device: torch.device,
+    timeout_minutes: int = 30,
+    backend: str | None = None,
+) -> DistributedContext:
     """初始化当前进程的分布式状态。"""
 
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -64,8 +68,9 @@ def init_distributed(device: torch.device, timeout_minutes: int = 30) -> Distrib
 
     if device.type == "cuda":
         torch.cuda.set_device(device)
+    resolved_backend = str(backend).strip().lower() if backend is not None else _choose_backend(device)
     dist.init_process_group(
-        backend=_choose_backend(device),
+        backend=resolved_backend,
         init_method="env://",
         timeout=timedelta(minutes=int(timeout_minutes)),
     )
