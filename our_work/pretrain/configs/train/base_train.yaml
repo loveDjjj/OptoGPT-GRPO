@@ -13,7 +13,8 @@ training:
   output_dir: outputs/our_work/pretrain/base_train
   # 单卡 A100 80G 默认每卡 batch 调到 16。
   per_device_train_batch_size: 16
-  per_device_eval_batch_size: 16
+  # 验证阶段不做反向传播，默认把单卡 eval batch 提高到 64，减少完整 val 扫描所需的 batch 数。
+  per_device_eval_batch_size: 64
   # 单卡默认保留适度梯度累积，方便后续无缝切多卡。
   gradient_accumulation_steps: 2
   num_train_epochs: 5
@@ -23,8 +24,8 @@ training:
   # 单卡 A100 默认直接打开 bf16 / tf32；若做数值诊断再手动关闭。
   bf16: true
   tf32: true
-  # 正式训练默认每 200 个 optimizer step 记录一次日志，避免在 42 万步总训练里刷出过密日志。
-  logging_steps: 200
+  # 正式训练默认每 1000 个 optimizer step 记录一次日志，避免在 42 万步总训练里刷出过密日志。
+  logging_steps: 1000
   # 全量 val 约 30 万条样本，完整评估一次代价很高；默认每 10 万步做一次全量评估，避免验证阶段吞掉大部分训练时间。
   eval_steps: 100000
   # checkpoint 默认每 5 万步保存一次，既保留恢复点，也不让保存频率和昂贵评估完全绑死。

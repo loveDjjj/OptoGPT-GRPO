@@ -219,7 +219,7 @@ torch 2.x.x cuda True
   - `data.persistent_workers: true`
   - `training.output_dir: outputs/our_work/pretrain/base_train`
   - `training.per_device_train_batch_size: 16`
-  - `training.per_device_eval_batch_size: 16`
+  - `training.per_device_eval_batch_size: 64`
   - `training.gradient_accumulation_steps: 2`
   - `training.max_steps: null`
   - `training.num_train_epochs: 5`
@@ -228,6 +228,7 @@ torch 2.x.x cuda True
   - `training.logging_steps: 200`
   - `training.eval_steps: 100000`
   - `training.save_steps: 50000`
+  - 评估路径会先把 logits 预处理成 `argmax token ids` 再做 metrics，避免完整收集 `[batch, seq_len, vocab]` 级别的大张量
   - `distributed.*` 只有在 `torchrun --nproc_per_node=...` 的真实多卡环境下才会生效；单进程 `python run_pretrain.py ...` 会忽略这部分并清理脏的 DDP 环境变量
 - `base_gpt.yaml`
   - `model.spectrum_dim: 2048`

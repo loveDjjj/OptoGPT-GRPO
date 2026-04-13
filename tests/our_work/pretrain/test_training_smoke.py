@@ -9,7 +9,7 @@ import torch
 from our_work.pretrain.dataset.hf_dataset import load_parquet_records
 from our_work.pretrain.model.configuration_spectral_gpt import SpectralGPTConfig
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
-from our_work.pretrain.trainer.metrics import compute_token_accuracy
+from our_work.pretrain.trainer.metrics import compute_token_accuracy, preprocess_logits_for_metrics
 from our_work.pretrain.scripts.run_pretrain import (
     _distributed_training_requested,
     build_trainer,
@@ -75,6 +75,7 @@ def test_build_trainer_components_and_load_parquet_records(tmp_path: Path):
     assert trainer.args.dataloader_persistent_workers is True
     assert trainer.args.ddp_find_unused_parameters is False
     assert trainer.args.save_total_limit == 2
+    assert trainer.preprocess_logits_for_metrics is preprocess_logits_for_metrics
     batch = next(iter(trainer.get_train_dataloader()))
     assert batch["spectra"].shape == (1, 2048)
     train_result = trainer.train()
@@ -170,6 +171,43 @@ def test_compute_token_accuracy_accepts_tuple_predictions() -> None:
     metrics = compute_token_accuracy(((logits, fake_past_key_values), labels))
 
     assert metrics["token_accuracy"] == pytest.approx(1.0)
+
+
+def test_compute_token_accuracy_accepts_preprocessed_token_ids() -> None:
+    predicted_token_ids = np.asarray(
+        [
+            [1, 2],
+            [1, 0],
+        ],
+        dtype=np.int64,
+    )
+    labels = np.asarray(
+        [
+            [1, 2],
+            [1, -100],
+        ],
+        dtype=np.int64,
+    )
+
+    metrics = compute_token_accuracy((predicted_token_ids, labels))
+
+    assert metrics["token_accuracy"] == pytest.approx(1.0)
+
+
+def test_preprocess_logits_for_metrics_returns_token_ids_for_tuple_logits() -> None:
+    logits = torch.tensor(
+        [
+            [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        ],
+        dtype=torch.float32,
+    )
+    fake_past_key_values = ("ignored-cache",)
+
+    token_ids = preprocess_logits_for_metrics((logits, fake_past_key_values), labels=None)
+
+    assert token_ids.shape == (2, 2)
+    assert torch.equal(token_ids, torch.tensor([[1, 2], [1, 0]], dtype=torch.int64))
 
 
 def test_model_forward_disables_cache_when_labels_are_present() -> None:

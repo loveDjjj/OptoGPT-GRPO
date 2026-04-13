@@ -24,7 +24,7 @@ from our_work.pretrain.dataset.hf_dataset import load_split_records
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
 from our_work.pretrain.model.configuration_spectral_gpt import SpectralGPTConfig
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
-from our_work.pretrain.trainer.metrics import compute_token_accuracy
+from our_work.pretrain.trainer.metrics import compute_token_accuracy, preprocess_logits_for_metrics
 
 
 def _ensure_trainer_dataset_namespace() -> None:
@@ -134,6 +134,7 @@ def build_trainer(
         eval_dataset=eval_dataset,
         data_collator=collator,
         compute_metrics=compute_token_accuracy,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
 
 
