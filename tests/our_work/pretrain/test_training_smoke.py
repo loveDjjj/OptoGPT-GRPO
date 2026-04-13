@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -5,6 +6,7 @@ import pytest
 
 from our_work.pretrain.dataset.hf_dataset import load_parquet_records
 from our_work.pretrain.scripts.run_pretrain import (
+    _distributed_training_requested,
     build_trainer,
     build_trainer_components,
     validate_record_spectrum_dim,
@@ -87,3 +89,63 @@ def test_validate_record_spectrum_dim_rejects_mismatched_model_input_width() -> 
 
     with pytest.raises(ValueError, match="spectrum_dim"):
         validate_record_spectrum_dim(records, split_name="train", spectrum_dim=32)
+
+
+def test_build_trainer_ignores_ddp_settings_without_real_distributed_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    shard_path = tmp_path / "smoke.parquet"
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "sample-000",
+                "layer_count": 5,
+                "structure_tokens": ["Ge_10"],
+                "token_ids": [1, 4, 2],
+                "materials": ["Ge"],
+                "thickness_nm": [10],
+                "spectrum_rt": [0.1] * 2048,
+            }
+        ]
+    ).to_parquet(shard_path, index=False)
+
+    records = load_parquet_records([str(shard_path)])
+    components = build_trainer_components(
+        model_config={
+            "vocab_size": 5,
+            "spectrum_dim": 2048,
+            "prefix_length": 2,
+            "n_positions": 16,
+            "n_embd": 16,
+            "n_layer": 1,
+            "n_head": 2,
+            "pad_token_id": 0,
+            "bos_token_id": 1,
+            "eos_token_id": 2,
+        },
+        token_list=["[PAD]", "[BOS]", "[EOS]", "[UNK]", "Ge_10"],
+    )
+
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
+    monkeypatch.setenv("MASTER_PORT", "29500")
+
+    assert _distributed_training_requested() is False
+
+    trainer = build_trainer(
+        model=components["model"],
+        train_dataset=records,
+        eval_dataset=records,
+        collator=components["collator"],
+        output_dir=str(tmp_path / "trainer-ddp-out"),
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
+        max_steps=1,
+        ddp_find_unused_parameters=False,
+        ddp_backend="nccl",
+    )
+
+    assert trainer.args.ddp_backend is None
+    assert trainer.args.ddp_find_unused_parameters is None
+    assert "LOCAL_RANK" not in os.environ
+    assert "WORLD_SIZE" not in os.environ

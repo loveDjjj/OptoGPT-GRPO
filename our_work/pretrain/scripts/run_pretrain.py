@@ -40,6 +40,19 @@ def _ensure_trainer_dataset_namespace() -> None:
     trainer_module.datasets = types.SimpleNamespace(Dataset=_PlaceholderDataset)
 
 
+def _distributed_training_requested() -> bool:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return True
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def _sanitize_single_process_distributed_env() -> None:
+    if _distributed_training_requested():
+        return
+    for key in ("LOCAL_RANK", "RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
+        os.environ.pop(key, None)
+
+
 def build_trainer_components(model_config: dict, token_list: list[str]) -> dict:
     tokenizer = SpectralStructureTokenizer(tokens=token_list)
     config = SpectralGPTConfig(**model_config)
@@ -82,6 +95,11 @@ def build_trainer(
     save_total_limit: int | None = None,
 ) -> Trainer:
     _ensure_trainer_dataset_namespace()
+    distributed_requested = _distributed_training_requested()
+    if not distributed_requested:
+        _sanitize_single_process_distributed_env()
+        ddp_find_unused_parameters = None
+        ddp_backend = None
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = bool(tf32)
         torch.backends.cudnn.allow_tf32 = bool(tf32)

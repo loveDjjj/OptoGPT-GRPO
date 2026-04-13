@@ -225,6 +225,7 @@ torch 2.x.x cuda True
   - `training.num_train_epochs: 5`
   - `training.bf16: true`
   - `training.tf32: true`
+  - `distributed.*` 只有在 `torchrun --nproc_per_node=...` 的真实多卡环境下才会生效；单进程 `python run_pretrain.py ...` 会忽略这部分并清理脏的 DDP 环境变量
 - `base_gpt.yaml`
   - `model.spectrum_dim: 2048`
 - `base_grpo.yaml`
