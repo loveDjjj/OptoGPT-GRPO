@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,7 +14,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from our_work._shared.io.config import load_yaml_config, resolve_repo_path
-from our_work.data_gen.analysis import analyze_dataset
 from our_work.data_gen.pipeline.build_dataset import build_small_dataset
 from our_work.data_gen.pipeline.material_registry import build_material_registry
 from our_work._shared.utils.seed import set_global_seed
@@ -140,6 +140,65 @@ def merge_rank_split_manifests(output_dir: str | Path, *, world_size: int) -> di
     return merged
 
 
+def run_analysis_subprocess(
+    *,
+    dataset_dir: str | Path,
+    analysis_output_dir: str | Path,
+    scopes: list[str],
+    batch_size: int,
+    wavelength_min: float,
+    wavelength_max: float,
+    engine: str,
+    pca_components: int,
+    pca_fit_samples: int,
+    cluster_count: int,
+    cluster_fit_samples: int,
+    cluster_iterations: int,
+    scatter_max_points: int,
+    device: str,
+    enable_structure_analysis: bool,
+    enable_spectrum_analysis: bool,
+) -> None:
+    script_path = PROJECT_ROOT / "our_work" / "data_gen" / "scripts" / "run_analyze_dataset.py"
+    command = [
+        sys.executable,
+        str(script_path),
+        "--dataset-dir",
+        str(dataset_dir),
+        "--output-dir",
+        str(analysis_output_dir),
+        "--batch-size",
+        str(batch_size),
+        "--wavelength-min",
+        str(wavelength_min),
+        "--wavelength-max",
+        str(wavelength_max),
+        "--engine",
+        str(engine),
+        "--pca-components",
+        str(pca_components),
+        "--pca-fit-samples",
+        str(pca_fit_samples),
+        "--cluster-count",
+        str(cluster_count),
+        "--cluster-fit-samples",
+        str(cluster_fit_samples),
+        "--cluster-iterations",
+        str(cluster_iterations),
+        "--scatter-max-points",
+        str(scatter_max_points),
+        "--device",
+        str(device),
+    ]
+    for scope in scopes:
+        command.extend(["--scope", str(scope)])
+    if not enable_structure_analysis:
+        command.append("--disable-structure-analysis")
+    if not enable_spectrum_analysis:
+        command.append("--disable-spectrum-analysis")
+    subprocess.run(command, check=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Build a small our_work spectral dataset.")
     parser.add_argument("--config", required=True, help="Path to the dataset YAML config.")
@@ -208,24 +267,49 @@ def main(argv: list[str] | None = None) -> None:
             if analysis_runtime["output_dir"]
             else Path(config["paths"]["output_dir"]) / "analysis"
         )
-        analyze_dataset(
-            dataset_dir=config["paths"]["output_dir"],
-            scopes=analysis_runtime["scopes"] if analysis_runtime["save_split_analysis"] else ["all"],
-            output_dir=analysis_output_dir,
-            batch_size=analysis_runtime["batch_size"],
-            wavelength_min=float(config["tmm"]["wavelength_range_um"][0]),
-            wavelength_max=float(config["tmm"]["wavelength_range_um"][1]),
-            engine=analysis_runtime["spectrum_engine"],
-            pca_components=analysis_runtime["pca_components"],
-            pca_fit_samples=analysis_runtime["pca_fit_samples"],
-            cluster_count=analysis_runtime["cluster_count"],
-            cluster_fit_samples=analysis_runtime["cluster_fit_samples"],
-            cluster_iterations=analysis_runtime["cluster_iterations"],
-            scatter_max_points=analysis_runtime["scatter_max_points"],
-            device=analysis_runtime["spectrum_device"],
-            enable_structure_analysis=analysis_runtime["structure_enabled"],
-            enable_spectrum_analysis=analysis_runtime["spectrum_enabled"],
-        )
+        scopes = analysis_runtime["scopes"] if analysis_runtime["save_split_analysis"] else ["all"]
+        if str(analysis_runtime["spectrum_engine"]).strip().lower() == "rapids":
+            run_analysis_subprocess(
+                dataset_dir=config["paths"]["output_dir"],
+                analysis_output_dir=analysis_output_dir,
+                scopes=scopes,
+                batch_size=analysis_runtime["batch_size"],
+                wavelength_min=float(config["tmm"]["wavelength_range_um"][0]),
+                wavelength_max=float(config["tmm"]["wavelength_range_um"][1]),
+                engine=analysis_runtime["spectrum_engine"],
+                pca_components=analysis_runtime["pca_components"],
+                pca_fit_samples=analysis_runtime["pca_fit_samples"],
+                cluster_count=analysis_runtime["cluster_count"],
+                cluster_fit_samples=analysis_runtime["cluster_fit_samples"],
+                cluster_iterations=analysis_runtime["cluster_iterations"],
+                scatter_max_points=analysis_runtime["scatter_max_points"],
+                device=analysis_runtime["spectrum_device"],
+                enable_structure_analysis=analysis_runtime["structure_enabled"],
+                enable_spectrum_analysis=analysis_runtime["spectrum_enabled"],
+            )
+        else:
+            # Lazy import keeps the torch-driven build process from importing the
+            # RAPIDS analysis stack unless we explicitly need in-process analysis.
+            from our_work.data_gen.analysis import analyze_dataset
+
+            analyze_dataset(
+                dataset_dir=config["paths"]["output_dir"],
+                scopes=scopes,
+                output_dir=analysis_output_dir,
+                batch_size=analysis_runtime["batch_size"],
+                wavelength_min=float(config["tmm"]["wavelength_range_um"][0]),
+                wavelength_max=float(config["tmm"]["wavelength_range_um"][1]),
+                engine=analysis_runtime["spectrum_engine"],
+                pca_components=analysis_runtime["pca_components"],
+                pca_fit_samples=analysis_runtime["pca_fit_samples"],
+                cluster_count=analysis_runtime["cluster_count"],
+                cluster_fit_samples=analysis_runtime["cluster_fit_samples"],
+                cluster_iterations=analysis_runtime["cluster_iterations"],
+                scatter_max_points=analysis_runtime["scatter_max_points"],
+                device=analysis_runtime["spectrum_device"],
+                enable_structure_analysis=analysis_runtime["structure_enabled"],
+                enable_spectrum_analysis=analysis_runtime["spectrum_enabled"],
+            )
 
 
 if __name__ == "__main__":

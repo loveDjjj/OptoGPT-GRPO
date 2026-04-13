@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from our_work.data_gen.analysis import analyze_dataset
+from our_work.data_gen.analysis import spectrum_analysis as spectrum_analysis_module
 from our_work.data_gen.scripts.run_analyze_dataset import main as analyze_main
 
 
@@ -136,3 +137,48 @@ def test_run_analyze_dataset_main_supports_dataset_dir(tmp_path: Path) -> None:
 
     assert (output_dir / "all" / "analysis_summary.json").exists()
     assert (output_dir / "all" / "structure_thickness_global.png").exists()
+
+
+def test_resolve_analysis_device_prefers_cupy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Runtime:
+        @staticmethod
+        def getDeviceCount() -> int:
+            return 2
+
+    class _Cuda:
+        runtime = _Runtime()
+
+    class _CupyStub:
+        cuda = _Cuda()
+
+    monkeypatch.setattr(spectrum_analysis_module, "cp", _CupyStub())
+
+    assert spectrum_analysis_module.resolve_analysis_device("auto") == "cuda"
+
+
+def test_analyze_spectrum_distribution_preserves_rapids_import_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(spectrum_analysis_module, "cp", None)
+    monkeypatch.setattr(spectrum_analysis_module, "cudf", None)
+    monkeypatch.setattr(spectrum_analysis_module, "PCA", None)
+    monkeypatch.setattr(spectrum_analysis_module, "KMeans", None)
+    monkeypatch.setattr(spectrum_analysis_module, "_RAPIDS_IMPORT_ERROR", ImportError("libcuml++.so missing"))
+
+    with pytest.raises(RuntimeError, match="libcuml\\+\\+\\.so missing") as exc_info:
+        spectrum_analysis_module.analyze_spectrum_distribution(
+            scope_name="all",
+            frame_factory=lambda: iter(()),
+            estimated_total_rows=0,
+            output_dir=tmp_path,
+            wavelength_min=2.0,
+            wavelength_max=15.0,
+            engine="rapids",
+            pca_components=4,
+            pca_fit_samples=8,
+            cluster_count=2,
+            cluster_fit_samples=8,
+            cluster_iterations=5,
+            scatter_max_points=8,
+            device="cuda",
+        )
+
+    assert isinstance(exc_info.value.__cause__, ImportError)

@@ -18,11 +18,14 @@ def main(argv: list[str] | None = None) -> None:
     source.add_argument("--dataset-dir")
     source.add_argument("--shard-path", action="append", default=[])
     parser.add_argument("--split", default="all")
+    parser.add_argument("--scope", action="append", default=[])
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--wavelength-min", type=float, default=None)
     parser.add_argument("--wavelength-max", type=float, default=None)
+    parser.add_argument("--engine", default="rapids")
     parser.add_argument("--pca-components", type=int, default=8)
+    parser.add_argument("--pca-fit-samples", type=int, default=50000)
     parser.add_argument("--cluster-count", type=int, default=16)
     parser.add_argument("--cluster-fit-samples", type=int, default=50000)
     parser.add_argument("--cluster-iterations", type=int, default=20)
@@ -39,11 +42,14 @@ def main(argv: list[str] | None = None) -> None:
         dataset_dir=dataset_dir,
         shard_paths=shard_paths,
         split=args.split,
+        scopes=args.scope or None,
         output_dir=output_dir,
         batch_size=args.batch_size,
         wavelength_min=args.wavelength_min,
         wavelength_max=args.wavelength_max,
+        engine=args.engine,
         pca_components=args.pca_components,
+        pca_fit_samples=args.pca_fit_samples,
         cluster_count=args.cluster_count,
         cluster_fit_samples=args.cluster_fit_samples,
         cluster_iterations=args.cluster_iterations,

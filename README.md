@@ -368,6 +368,10 @@ analysis:
     save_split_analysis: false
 ```
 
+说明：
+- 默认自动分析只跑 `all`，避免生成完成后再把 `train / val / test` 重复扫一遍。
+- 当 `analysis.spectrum.engine: rapids` 时，`run_build_dataset.py` 会在独立子进程里调用 `run_analyze_dataset.py`，避免同一 Python 进程里混用 `torch` 和 RAPIDS 的 CUDA 运行时栈。
+
 ```bash
 cd /srv/OptoGPT-GRPO
 python our_work/data_gen/scripts/run_build_dataset.py --config our_work/data_gen/configs/dataset_v1.yaml

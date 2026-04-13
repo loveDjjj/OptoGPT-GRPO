@@ -6,18 +6,19 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import numpy as np
-import torch
 
+_RAPIDS_IMPORT_ERROR: Exception | None = None
 try:
     import cupy as cp
     import cudf
     from cuml.cluster import KMeans
     from cuml.decomposition import PCA
-except Exception:  # pragma: no cover - optional dependency
+except Exception as exc:  # pragma: no cover - optional dependency
     cp = None
     cudf = None
     KMeans = None
     PCA = None
+    _RAPIDS_IMPORT_ERROR = exc
 
 from .io import extract_spectrum_matrix
 from .plots import save_bar_chart, save_cluster_representative_plot, save_pca_scatter, save_spectrum_mean_std_plot
@@ -26,7 +27,12 @@ from .plots import save_bar_chart, save_cluster_representative_plot, save_pca_sc
 def resolve_analysis_device(device: str = "auto") -> str:
     resolved = str(device).strip().lower()
     if resolved == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if cp is None:
+            return "cpu"
+        try:
+            return "cuda" if int(cp.cuda.runtime.getDeviceCount()) > 0 else "cpu"
+        except Exception:
+            return "cpu"
     return resolved
 
 
@@ -76,7 +82,8 @@ def analyze_spectrum_distribution(
     if str(engine).strip().lower() != "rapids":
         raise ValueError(f"unsupported spectrum analysis engine: {engine}")
     if cp is None or cudf is None or PCA is None or KMeans is None:
-        raise RuntimeError("RAPIDS spectrum analysis requires cudf, cupy, and cuml to be installed")
+        detail = f"{type(_RAPIDS_IMPORT_ERROR).__name__}: {_RAPIDS_IMPORT_ERROR}" if _RAPIDS_IMPORT_ERROR else "unknown import error"
+        raise RuntimeError(f"RAPIDS import failed for spectrum analysis: {detail}") from _RAPIDS_IMPORT_ERROR
     if resolved_device != "cuda":
         raise RuntimeError("RAPIDS spectrum analysis currently requires CUDA-capable execution")
 

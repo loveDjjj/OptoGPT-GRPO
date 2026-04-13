@@ -14,7 +14,6 @@ from .io import (
     resolve_custom_scope,
 )
 from .structure_analysis import analyze_structure_distribution
-from .spectrum_analysis import analyze_spectrum_distribution
 
 
 def analyze_dataset(
@@ -76,6 +75,11 @@ def analyze_dataset(
                 output_dir=scope_output_dir,
             )
         if enable_spectrum_analysis:
+            # Import on demand so structure-only analysis does not eagerly load
+            # the RAPIDS runtime in environments where it is unavailable or
+            # intentionally isolated in a subprocess.
+            from .spectrum_analysis import analyze_spectrum_distribution
+
             scope_summary["spectrum"] = analyze_spectrum_distribution(
                 scope_name=scope_name,
                 frame_factory=lambda: iter_spectrum_frames(shard_paths=scope_shards),

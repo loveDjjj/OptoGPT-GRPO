@@ -248,12 +248,27 @@ def test_run_build_dataset_main_triggers_auto_analysis(monkeypatch, tmp_path: Pa
             "tmm": {"wavelength_range_um": [2.0, 15.0], "num_points": 8, "incident_angle": 0.0, "polarization": 0, "tolerance": 0.001, "complex_dtype": "complex128", "batch_size": 1},
             "shards": {"records_per_shard": 1},
             "splits": {"train_ratio": 1.0, "val_ratio": 0.0},
-            "analysis": {"enabled": True, "auto_after_build": True, "scopes": ["all"]},
+            "analysis": {
+                "enabled": True,
+                "auto_after_build": True,
+                "scopes": ["all"],
+                "spectrum": {
+                    "engine": "rapids",
+                    "device": "auto",
+                    "pca_components": 4,
+                    "pca_fit_samples": 8,
+                    "cluster_count": 2,
+                    "cluster_fit_samples": 8,
+                    "cluster_iterations": 5,
+                    "scatter_max_points": 8,
+                    "save_split_analysis": False,
+                },
+            },
         },
     )
     monkeypatch.setattr("our_work.data_gen.scripts.run_build_dataset.build_material_registry", lambda *args, **kwargs: type("Registry", (), {"material_names": ["Ge"]})())
     monkeypatch.setattr("our_work.data_gen.scripts.run_build_dataset.build_small_dataset", lambda **kwargs: captured.update({"build": kwargs}))
-    monkeypatch.setattr("our_work.data_gen.scripts.run_build_dataset.analyze_dataset", lambda **kwargs: captured.update({"analysis": kwargs}))
+    monkeypatch.setattr("our_work.data_gen.scripts.run_build_dataset.run_analysis_subprocess", lambda **kwargs: captured.update({"analysis": kwargs}))
 
     run_build_dataset_main(["--config", str(config_path)])
 
