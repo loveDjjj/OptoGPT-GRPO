@@ -45,6 +45,11 @@ class SpectralGPTForCausalLM(PreTrainedModel):
         **kwargs,
     ) -> CausalLMOutputWithPast:
         kwargs.pop("num_items_in_batch", None)
+        if labels is not None:
+            # Training/eval under Trainer does not consume generation cache, and
+            # leaving it on causes `past_key_values` to be threaded into eval
+            # predictions unnecessarily.
+            kwargs.setdefault("use_cache", False)
         prefix_embeds = self.projector(spectra)
         token_embeds = self.backbone.wte(input_ids)
         # The decoder always sees prefix embeddings first, followed by structure tokens.

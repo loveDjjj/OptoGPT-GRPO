@@ -1,10 +1,15 @@
 import os
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 from our_work.pretrain.dataset.hf_dataset import load_parquet_records
+from our_work.pretrain.model.configuration_spectral_gpt import SpectralGPTConfig
+from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
+from our_work.pretrain.trainer.metrics import compute_token_accuracy
 from our_work.pretrain.scripts.run_pretrain import (
     _distributed_training_requested,
     build_trainer,
@@ -149,3 +154,44 @@ def test_build_trainer_ignores_ddp_settings_without_real_distributed_env(tmp_pat
     assert trainer.args.ddp_find_unused_parameters is None
     assert "LOCAL_RANK" not in os.environ
     assert "WORLD_SIZE" not in os.environ
+
+
+def test_compute_token_accuracy_accepts_tuple_predictions() -> None:
+    logits = np.asarray([
+        [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+    ], dtype=np.float32)
+    labels = np.asarray([
+        [1, 2],
+        [1, -100],
+    ], dtype=np.int64)
+    fake_past_key_values = ("ignored-cache",)
+
+    metrics = compute_token_accuracy(((logits, fake_past_key_values), labels))
+
+    assert metrics["token_accuracy"] == pytest.approx(1.0)
+
+
+def test_model_forward_disables_cache_when_labels_are_present() -> None:
+    model = SpectralGPTForCausalLM(
+        SpectralGPTConfig(
+            vocab_size=5,
+            spectrum_dim=8,
+            prefix_length=2,
+            n_positions=8,
+            n_embd=8,
+            n_layer=1,
+            n_head=2,
+            pad_token_id=0,
+            bos_token_id=1,
+            eos_token_id=2,
+        )
+    )
+    outputs = model(
+        spectra=torch.zeros((1, 8), dtype=torch.float32),
+        input_ids=torch.tensor([[1, 4, 2]], dtype=torch.long),
+        attention_mask=torch.ones((1, 5), dtype=torch.long),
+        labels=torch.tensor([[-100, -100, 1, 4, 2]], dtype=torch.long),
+    )
+
+    assert outputs.past_key_values is None
