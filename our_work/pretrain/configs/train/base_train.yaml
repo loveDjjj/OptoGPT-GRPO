@@ -23,9 +23,12 @@ training:
   # 单卡 A100 默认直接打开 bf16 / tf32；若做数值诊断再手动关闭。
   bf16: true
   tf32: true
-  logging_steps: 50
-  eval_steps: 500
-  save_steps: 500
+  # 正式训练默认每 200 个 optimizer step 记录一次日志，避免在 42 万步总训练里刷出过密日志。
+  logging_steps: 200
+  # 全量 val 约 30 万条样本，完整评估一次代价很高；默认每 10 万步做一次全量评估，避免验证阶段吞掉大部分训练时间。
+  eval_steps: 100000
+  # checkpoint 默认每 5 万步保存一次，既保留恢复点，也不让保存频率和昂贵评估完全绑死。
+  save_steps: 50000
   save_total_limit: 3
 
 distributed:
