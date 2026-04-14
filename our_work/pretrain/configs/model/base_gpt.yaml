@@ -3,6 +3,8 @@ model:
   spectrum_dim: 2048
   prefix_length: 8
   n_positions: 32
-  n_embd: 256
+  # 调整到 1024 hidden，配合 8 个 spectrum prefix tokens 使用更强的 decoder 容量。
+  n_embd: 1024
   n_layer: 6
-  n_head: 8
+  # 1024 / 16 = 64，每个 attention head 维度是标准的 64。
+  n_head: 16

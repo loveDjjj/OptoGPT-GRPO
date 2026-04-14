@@ -232,6 +232,10 @@ torch 2.x.x cuda True
   - `distributed.*` 只有在 `torchrun --nproc_per_node=...` 的真实多卡环境下才会生效；单进程 `python run_pretrain.py ...` 会忽略这部分并清理脏的 DDP 环境变量
 - `base_gpt.yaml`
   - `model.spectrum_dim: 2048`
+  - `model.prefix_length: 8`
+  - `model.n_embd: 1024`
+  - `model.n_layer: 6`
+  - `model.n_head: 16`
 - `base_grpo.yaml`
   - `training.per_device_batch_size: 16`
   - `rollout.group_size: 4`
