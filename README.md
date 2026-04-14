@@ -223,9 +223,10 @@ torch 2.x.x cuda True
   - `training.gradient_accumulation_steps: 2`
   - `training.max_steps: null`
   - `training.num_train_epochs: 5`
+  - `training.learning_rate: 1e-4`
   - `training.bf16: true`
   - `training.tf32: true`
-  - `training.logging_steps: 200`
+  - `training.logging_steps: 1000`
   - `training.eval_steps: 100000`
   - `training.save_steps: 50000`
   - 评估路径会先把 logits 预处理成 `argmax token ids` 再做 metrics，避免完整收集 `[batch, seq_len, vocab]` 级别的大张量

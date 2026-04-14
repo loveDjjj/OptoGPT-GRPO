@@ -20,7 +20,8 @@ training:
   num_train_epochs: 5
   # 正式训练默认由 epoch 控制；若要快速 smoke，可临时改成小整数。
   max_steps: null
-  learning_rate: 5.0e-4
+  # 针对默认 1024/6/16 模型配置，默认学习率下调到 1e-4，减少从 7M 级别放大到接近 1e8 参数后的训练不稳定风险。
+  learning_rate: 1.0e-4
   # 单卡 A100 默认直接打开 bf16 / tf32；若做数值诊断再手动关闭。
   bf16: true
   tf32: true
