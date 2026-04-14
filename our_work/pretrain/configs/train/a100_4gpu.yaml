@@ -18,6 +18,10 @@ training:
   max_steps: null
   # 跟当前 1024/6/16 默认模型保持一致，默认先用更稳的 1e-4。
   learning_rate: 1.0e-4
+  # 大模型 4 卡训练显式用 cosine 调度，并给一个短 warmup，减少前期梯度尖峰。
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.01
+  max_grad_norm: 1.0
   bf16: true
   tf32: true
   logging_steps: 1000

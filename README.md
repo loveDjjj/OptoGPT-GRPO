@@ -565,6 +565,9 @@ torchrun --nproc_per_node=4 our_work/pretrain/scripts/run_pretrain.py \
 - `per_device_eval_batch_size: 512`
 - `num_train_epochs: 100`
 - `learning_rate: 1e-4`
+- `lr_scheduler_type: cosine`
+- `warmup_ratio: 0.01`
+- `max_grad_norm: 1.0`
 - `logging_steps: 1000`
 - `eval_steps: 5000`
 - `save_steps: 5000`

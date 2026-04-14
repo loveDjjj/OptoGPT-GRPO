@@ -1,54 +1,58 @@
 # 本次修改摘要
 
 ## 需求
-- 按 `64 CPU + 4 x A100` 重新整理 `our_work/pretrain/configs/train/a100_4gpu.yaml`
-- 同时把训练数据路径切到 `our_work/data_gen/configs/a100_4gpu.yaml` 产出的数据集
-- 按指定要求调整：
-  - `per_device_train_batch_size: 512`
-  - `per_device_eval_batch_size: 512`
-  - `num_train_epochs: 100`
-  - `logging_steps: 1000`
-  - `save_total_limit: 3`
+- 给 `our_work/pretrain` 训练入口真正接上：
+  - `max_grad_norm`
+  - `lr_scheduler_type`
+  - `warmup_ratio`
+- 同时在 4 卡训练配置里启用：
+  - `max_grad_norm: 1.0`
+  - `lr_scheduler_type: cosine`
+  - `warmup_ratio: 0.01`
 
 ## 实际修改
+- `our_work/pretrain/scripts/run_pretrain.py`
+  - `build_trainer(...)` 新增参数：
+    - `lr_scheduler_type`
+    - `warmup_ratio`
+    - `max_grad_norm`
+  - 这三个参数现在会真实传给 `TrainingArguments`
+  - `main()` 里新增从 YAML `training.*` 读取这三个值
 - `our_work/pretrain/configs/train/a100_4gpu.yaml`
-  - `data.dataset_dir: outputs/our_work/data_gen/a100_4gpu`
-  - `data.vocab_path: outputs/our_work/data_gen/a100_4gpu/vocab/vocab.json`
-  - `data.num_workers: 12`
-    - 说明：`num_workers` 是每个 rank / 每张卡各自的 DataLoader worker 数，不是全机总数
-    - 在 4 卡下总 worker 约为 `48`
-  - `training.per_device_train_batch_size: 512`
-  - `training.per_device_eval_batch_size: 512`
-  - `training.num_train_epochs: 100`
-  - `training.learning_rate: 1e-4`
-  - `training.logging_steps: 1000`
-  - `training.eval_steps: 5000`
-  - `training.save_steps: 5000`
-  - `training.save_total_limit: 3`
-  - 新增 `monitoring:` 配置段，与当前预训练监控逻辑保持一致
+  - `training.lr_scheduler_type: cosine`
+  - `training.warmup_ratio: 0.01`
+  - `training.max_grad_norm: 1.0`
+- `tests/our_work/pretrain/test_training_smoke.py`
+  - build_trainer smoke 新增断言：
+    - `lr_scheduler_type`
+    - `warmup_ratio`
+    - `max_grad_norm`
 - `README.md`
   - 补充 4 卡训练配置要点说明：
-    - 读取 `outputs/our_work/data_gen/a100_4gpu`
-    - batch / epoch / log / eval / save 默认值
-- `docs/notes.md`
-  - 覆盖为本次 4 卡配置调整摘要
-- `docs/logs/2026-04.md`
-  - 追加本次记录
+    - `lr_scheduler_type: cosine`
+    - `warmup_ratio: 0.01`
+    - `max_grad_norm: 1.0`
 
 ## 说明
-- 这次只改 4 卡专用训练配置，不改单卡默认配置。
-- 当前保留 `gradient_accumulation_steps: 2`，所以 4 卡时全局有效 train batch 为：
-  - `512 * 2 * 4 = 4096`
+- 如果你现在的训练环境里 `/dev/shm` 真的已经是 `500G`，那从容量上看，之前那种 `No space left on device` 理论上应该不会再是“共享内存总量太小”的问题。
+- 但前提是：
+  - 训练进程**实际看到的** `/dev/shm` 也是这 500G
+  - 不是宿主机改了、容器里还是小 shm
+- 这点你仍然应该在训练 shell 里再确认一次：
+  - `df -h /dev/shm`
 
 ## 验证
-- `D:\\anaconda\\envs\\oneday\\python.exe -c "import yaml, pathlib; cfg=yaml.safe_load(pathlib.Path('our_work/pretrain/configs/train/a100_4gpu.yaml').read_text(encoding='utf-8')); print(cfg['data']['dataset_dir']); print(cfg['data']['vocab_path']); print(cfg['data']['num_workers']); print(cfg['training']['per_device_train_batch_size'], cfg['training']['per_device_eval_batch_size'], cfg['training']['num_train_epochs'], cfg['training']['logging_steps'], cfg['training']['eval_steps'], cfg['training']['save_steps'], cfg['training']['save_total_limit']); print(cfg['monitoring'])\"`
-  - 结果：
-    - `outputs/our_work/data_gen/a100_4gpu`
-    - `outputs/our_work/data_gen/a100_4gpu/vocab/vocab.json`
-    - `12`
-    - `512 512 100 1000 5000 5000 3`
-    - `{'tensorboard': True, 'jsonl': True, 'csv': True, 'save_plots': True, 'plot_every_eval': True, 'flush_secs': 10}`
+- `D:\\anaconda\\envs\\oneday\\python.exe -m compileall our_work/pretrain tests/our_work/pretrain`
+  - 通过
+- `D:\\anaconda\\envs\\oneday\\python.exe -c "import yaml, pathlib; cfg=yaml.safe_load(pathlib.Path('our_work/pretrain/configs/train/a100_4gpu.yaml').read_text(encoding='utf-8')); print(cfg['training']['lr_scheduler_type'], cfg['training']['warmup_ratio'], cfg['training']['max_grad_norm'])"`
+  - 结果：`cosine 0.01 1.0`
+- 手工 smoke
+  - 构造最小 Trainer，并传入：
+    - `lr_scheduler_type='cosine'`
+    - `warmup_ratio=0.01`
+    - `max_grad_norm=1.0`
+  - 结果：通过，输出 `sched-grad-smoke-ok`
 
 ## Git
-- branch: `config/pretrain-a100-4gpu-tuned`
+- branch: `feat/pretrain-scheduler-grad-guard`
 - commit: pending

@@ -81,6 +81,8 @@ def build_trainer(
     max_steps: int | None = None,
     num_train_epochs: float = 1.0,
     learning_rate: float = 5.0e-4,
+    lr_scheduler_type: str = "linear",
+    warmup_ratio: float = 0.0,
     logging_steps: int = 10,
     eval_steps: int = 50,
     save_steps: int = 50,
@@ -94,6 +96,7 @@ def build_trainer(
     ddp_find_unused_parameters: bool | None = None,
     ddp_backend: str | None = None,
     save_total_limit: int | None = None,
+    max_grad_norm: float = 1.0,
     callbacks: list | None = None,
 ) -> Trainer:
     _ensure_trainer_dataset_namespace()
@@ -112,6 +115,8 @@ def build_trainer(
         num_train_epochs=num_train_epochs,
         max_steps=max_steps if max_steps is not None else -1,
         learning_rate=learning_rate,
+        lr_scheduler_type=lr_scheduler_type,
+        warmup_ratio=warmup_ratio,
         logging_steps=logging_steps,
         eval_strategy="steps",
         eval_steps=eval_steps,
@@ -126,6 +131,7 @@ def build_trainer(
         ddp_find_unused_parameters=ddp_find_unused_parameters,
         ddp_backend=ddp_backend,
         save_total_limit=save_total_limit,
+        max_grad_norm=max_grad_norm,
         report_to=[],
         remove_unused_columns=False,
     )
@@ -210,6 +216,8 @@ def main() -> None:
         max_steps=train_yaml["training"].get("max_steps"),
         num_train_epochs=train_yaml["training"].get("num_train_epochs", 1.0),
         learning_rate=train_yaml["training"].get("learning_rate", 5.0e-4),
+        lr_scheduler_type=str(train_yaml["training"].get("lr_scheduler_type", "linear")),
+        warmup_ratio=float(train_yaml["training"].get("warmup_ratio", 0.0)),
         logging_steps=train_yaml["training"].get("logging_steps", 10),
         eval_steps=train_yaml["training"].get("eval_steps", 50),
         save_steps=train_yaml["training"].get("save_steps", 50),
@@ -223,6 +231,7 @@ def main() -> None:
         ddp_find_unused_parameters=train_yaml.get("distributed", {}).get("ddp_find_unused_parameters"),
         ddp_backend=train_yaml.get("distributed", {}).get("backend"),
         save_total_limit=train_yaml["training"].get("save_total_limit"),
+        max_grad_norm=float(train_yaml["training"].get("max_grad_norm", 1.0)),
         callbacks=[
             PretrainVisualizationCallback(
                 output_dir=train_yaml["training"]["output_dir"],

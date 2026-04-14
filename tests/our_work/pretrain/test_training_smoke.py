@@ -63,12 +63,15 @@ def test_build_trainer_components_and_load_parquet_records(tmp_path: Path):
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
         max_steps=1,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.01,
         gradient_accumulation_steps=2,
         dataloader_num_workers=1,
         dataloader_pin_memory=True,
         dataloader_persistent_workers=True,
         ddp_find_unused_parameters=False,
         save_total_limit=2,
+        max_grad_norm=1.0,
     )
     assert trainer is not None
     assert trainer.args.gradient_accumulation_steps == 2
@@ -77,6 +80,9 @@ def test_build_trainer_components_and_load_parquet_records(tmp_path: Path):
     assert trainer.args.dataloader_persistent_workers is True
     assert trainer.args.ddp_find_unused_parameters is False
     assert trainer.args.save_total_limit == 2
+    assert str(trainer.args.lr_scheduler_type) == "SchedulerType.COSINE"
+    assert trainer.args.warmup_ratio == pytest.approx(0.01)
+    assert trainer.args.max_grad_norm == pytest.approx(1.0)
     assert trainer.preprocess_logits_for_metrics is preprocess_logits_for_metrics
     batch = next(iter(trainer.get_train_dataloader()))
     assert batch["spectra"].shape == (1, 2048)
