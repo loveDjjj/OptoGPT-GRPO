@@ -558,6 +558,18 @@ torchrun --nproc_per_node=4 our_work/pretrain/scripts/run_pretrain.py \
   --train-config our_work/pretrain/configs/train/a100_4gpu.yaml
 ```
 
+4 卡默认训练配置要点：
+
+- 读取数据集：`outputs/our_work/data_gen/a100_4gpu`
+- `per_device_train_batch_size: 512`
+- `per_device_eval_batch_size: 512`
+- `num_train_epochs: 100`
+- `learning_rate: 1e-4`
+- `logging_steps: 1000`
+- `eval_steps: 5000`
+- `save_steps: 5000`
+- `save_total_limit: 3`
+
 8 卡 A100 正式命令：
 
 ```bash

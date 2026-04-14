@@ -1,26 +1,39 @@
 data:
-  dataset_dir: outputs/our_work/data_gen/v1
-  vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json
-  num_workers: 10
+  # 4 卡训练读取 4 卡数据生成配置产物，不再指向单卡默认数据目录。
+  dataset_dir: outputs/our_work/data_gen/a100_4gpu
+  vocab_path: outputs/our_work/data_gen/a100_4gpu/vocab/vocab.json
+  # num_workers 是每个 rank / 每张卡各自的 DataLoader worker 数，不是整机总数。
+  # 64 CPU + 4 GPU 下这里取 12，合计约 48 个 worker，给主进程和系统留出余量。
+  num_workers: 12
   prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
 
 training:
   output_dir: outputs/our_work/pretrain/a100_4gpu
-  per_device_train_batch_size: 16
-  per_device_eval_batch_size: 16
+  per_device_train_batch_size: 512
+  per_device_eval_batch_size: 512
   gradient_accumulation_steps: 2
-  num_train_epochs: 5
+  num_train_epochs: 100
   max_steps: null
-  learning_rate: 5.0e-4
+  # 跟当前 1024/6/16 默认模型保持一致，默认先用更稳的 1e-4。
+  learning_rate: 1.0e-4
   bf16: true
   tf32: true
-  logging_steps: 25
-  eval_steps: 250
-  save_steps: 250
-  save_total_limit: 4
+  logging_steps: 1000
+  # 4 卡正式训练不再频繁全量验证；每 5000 step 验证和保存一次。
+  eval_steps: 5000
+  save_steps: 5000
+  save_total_limit: 3
 
 distributed:
   backend: nccl
   ddp_find_unused_parameters: false
+
+monitoring:
+  tensorboard: true
+  jsonl: true
+  csv: true
+  save_plots: true
+  plot_every_eval: true
+  flush_secs: 10
