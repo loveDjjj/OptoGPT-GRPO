@@ -137,3 +137,42 @@ def test_run_eval_suite_writes_expected_outputs(tmp_path: Path, monkeypatch: pyt
     assert (run_dir / "results" / "val.jsonl").exists()
     assert (run_dir / "plots" / "comparison" / "train_vs_val_rmse.png").exists()
     assert any((run_dir / "samples" / "train").rglob("*.png"))
+
+
+def test_eval_records_buckets_tmm_batches_by_prediction_layer_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    from our_work.eval.pipeline import _evaluate_records
+
+    calls: list[list[int]] = []
+
+    def fake_simulate(groups, **kwargs):
+        calls.append([len(group) for group in groups])
+        reflections = [[0.1] * 4 for _ in groups]
+        transmissions = [[0.9] * 4 for _ in groups]
+        return [2.0, 6.0, 10.0, 15.0], reflections, transmissions, [True] * len(groups)
+
+    monkeypatch.setattr("our_work.eval.pipeline.simulate_structure_batch", fake_simulate)
+
+    records = [
+        {"sample_id": "a", "layer_count": 1, "structure_tokens": ["Ge_10"], "spectrum_rt": [0.1] * 4 + [0.9] * 4},
+        {"sample_id": "b", "layer_count": 2, "structure_tokens": ["Ge_10", "Ge_10"], "spectrum_rt": [0.1] * 4 + [0.9] * 4},
+        {"sample_id": "c", "layer_count": 1, "structure_tokens": ["Ge_10"], "spectrum_rt": [0.1] * 4 + [0.9] * 4},
+    ]
+    predicted_groups = [["Ge_10"], ["Ge_10", "Ge_10"], ["Ge_10"]]
+
+    rows = _evaluate_records(
+        split_name="train",
+        records=records,
+        predicted_groups=predicted_groups,
+        database_path="database",
+        wavelength_range_um=(2.0, 15.0),
+        num_points=4,
+        incident_angle=0.0,
+        polarization=0,
+        tolerance=0.001,
+        complex_dtype="complex128",
+        tmm_batch_size=4,
+        tmm_device="cpu",
+    )
+
+    assert calls == [[1, 1], [2]]
+    assert all(row["generated_valid"] for row in rows)

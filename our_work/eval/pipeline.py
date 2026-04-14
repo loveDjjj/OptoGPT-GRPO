@@ -118,8 +118,7 @@ def _evaluate_records(
     tmm_device: str | None,
 ) -> list[dict]:
     rows: list[dict] = []
-    valid_indices: list[int] = []
-    valid_groups: list[list[str]] = []
+    valid_buckets: dict[int, list[tuple[int, list[str]]]] = {}
     for index, (record, predicted_tokens) in enumerate(zip(records, predicted_groups)):
         row = {
             "split": split_name,
@@ -142,33 +141,34 @@ def _evaluate_records(
             continue
         if _has_missing_material_data(predicted_tokens, database_path):
             continue
-        valid_indices.append(index)
-        valid_groups.append(predicted_tokens)
+        valid_buckets.setdefault(len(predicted_tokens), []).append((index, predicted_tokens))
 
-    for start in range(0, len(valid_groups), max(1, int(tmm_batch_size))):
-        chunk_indices = valid_indices[start : start + max(1, int(tmm_batch_size))]
-        chunk_groups = valid_groups[start : start + max(1, int(tmm_batch_size))]
-        _, reflections, transmissions, ok_mask = simulate_structure_batch(
-            chunk_groups,
-            database_path=str(database_path),
-            wavelength_range_um=wavelength_range_um,
-            num_points=num_points,
-            incident_angle=incident_angle,
-            polarization=polarization,
-            tolerance=tolerance,
-            complex_dtype=complex_dtype,
-            device=tmm_device,
-        )
-        for local_index, row_index in enumerate(chunk_indices):
-            if not bool(ok_mask[local_index]):
-                continue
-            predicted_spectrum = flatten_rt_spectrum(reflections[local_index], transmissions[local_index]).astype(np.float32).reshape(-1)
-            target_spectrum = np.asarray(rows[row_index]["target_spectrum_rt"], dtype=np.float32).reshape(-1)
-            diff = predicted_spectrum - target_spectrum
-            rows[row_index]["generated_valid"] = True
-            rows[row_index]["spectrum_rmse"] = float(np.sqrt(np.mean(diff**2)))
-            rows[row_index]["spectrum_mae"] = float(np.mean(np.abs(diff)))
-            rows[row_index]["predicted_spectrum_rt"] = predicted_spectrum.tolist()
+    for _, bucket_items in sorted(valid_buckets.items()):
+        for start in range(0, len(bucket_items), max(1, int(tmm_batch_size))):
+            chunk_items = bucket_items[start : start + max(1, int(tmm_batch_size))]
+            chunk_indices = [item[0] for item in chunk_items]
+            chunk_groups = [item[1] for item in chunk_items]
+            _, reflections, transmissions, ok_mask = simulate_structure_batch(
+                chunk_groups,
+                database_path=str(database_path),
+                wavelength_range_um=wavelength_range_um,
+                num_points=num_points,
+                incident_angle=incident_angle,
+                polarization=polarization,
+                tolerance=tolerance,
+                complex_dtype=complex_dtype,
+                device=tmm_device,
+            )
+            for local_index, row_index in enumerate(chunk_indices):
+                if not bool(ok_mask[local_index]):
+                    continue
+                predicted_spectrum = flatten_rt_spectrum(reflections[local_index], transmissions[local_index]).astype(np.float32).reshape(-1)
+                target_spectrum = np.asarray(rows[row_index]["target_spectrum_rt"], dtype=np.float32).reshape(-1)
+                diff = predicted_spectrum - target_spectrum
+                rows[row_index]["generated_valid"] = True
+                rows[row_index]["spectrum_rmse"] = float(np.sqrt(np.mean(diff**2)))
+                rows[row_index]["spectrum_mae"] = float(np.mean(np.abs(diff)))
+                rows[row_index]["predicted_spectrum_rt"] = predicted_spectrum.tolist()
     return rows
 
 

@@ -2,23 +2,23 @@ experiment:
   name: eval_suite
 
 paths:
-  checkpoint_dir: outputs/our_work/pretrain/base_train
-  dataset_dir: outputs/our_work/data_gen/v1
+  checkpoint_dir: outputs/our_work/pretrain/a100_4gpu
+  dataset_dir: outputs/our_work/data_gen/a100_4gpu
   database_dir: our_work/_shared/database
-  output_dir: outputs/our_work/eval
+  output_dir: outputs/our_work/eval/a100_4gpu
 
 data:
   splits: [train, val]
   sample_mode: random
   max_samples_per_split:
-    train: 512
-    val: 512
+    train: 102400
+    val: 10240
   seed: 42
 
 inference:
   device: auto
-  batch_size: 256
-  max_new_tokens: 10
+  batch_size: 1024
+  max_new_tokens: 15
 
 tmm:
   wavelength_range_um: [2.0, 15.0]
@@ -27,7 +27,7 @@ tmm:
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
-  batch_size: 512
+  batch_size: 1024
   device: auto
 
 plots:
