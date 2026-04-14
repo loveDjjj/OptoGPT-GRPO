@@ -23,14 +23,21 @@
 ## 说明
 - 当前 `max_new_tokens` 的含义是：
   - 最多再自回归生成这么多个 token
-  - 不是“固定层数”
+  - 不是固定层数
 - 生成完成后，不同样本解码出来的结构 token 长度可以不同
 - 现在评测路径会先按预测层数分桶后再做 TMM batch，因此长度不同不会再直接混批进 TMM
 
 ## 验证
-- 待运行：
-  - `D:\\anaconda\\envs\\oneday\\python.exe -m compileall our_work/eval tests/our_work/eval`
+- `D:\\anaconda\\envs\\oneday\\python.exe -m compileall our_work/eval tests/our_work/eval`
+  - 结果：通过
+- `pytest`
   - `D:\\anaconda\\envs\\oneday\\python.exe -m pytest tests/our_work/eval/test_eval_suite.py -q`
+  - 当前 Windows 环境仍会被 session 收尾的临时目录权限问题打断，没拿到干净退出码
+- 手工 smoke
+  - 构造最小数据库上下文
+  - 直接调用 `_evaluate_records(...)`
+  - 验证不同长度预测结构会拆成多个 TMM batch
+  - 结果：通过，输出 `eval-layer-bucket-smoke-ok`
 
 ## Git
 - branch: `fix/eval-suite-layer-bucket-tmm`
