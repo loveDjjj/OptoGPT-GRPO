@@ -703,3 +703,57 @@ python our_work/pretrain/scripts/run_eval.py \
 - rollout 与 update 现在共用同一 policy 定义，不再出现 “filtered rollout / raw scoring” 的不一致。
 - 当前默认的光谱误差是 `R/T` 直接误差，即比较拼接后的 `[R..., T...]` 光谱。
 - `core/` 保留的主要目的，是兼容旧 OptoGPT checkpoint 的加载。
+## our_work Eval Suite
+
+用途：
+
+- 加载 `our_work/pretrain` 训练好的 checkpoint
+- 同时评估 `train + val`
+- 各 split 随机抽样固定数量样本
+- 批量生成预测结构
+- 批量回算预测结构光谱
+- 计算目标光谱与预测光谱误差
+- 输出汇总 JSON / JSONL
+- 输出最好 / 最差 / 接近均值误差样本的序列与光谱对比图
+
+运行方式：
+
+```bash
+python our_work/eval/scripts/run_eval_suite.py --config our_work/eval/configs/base_eval.yaml
+```
+
+默认配置文件：
+
+- `our_work/eval/configs/base_eval.yaml`
+
+主要配置项：
+
+- `paths.checkpoint_dir`
+- `paths.dataset_dir`
+- `paths.database_dir`
+- `paths.output_dir`
+- `data.splits`
+- `data.max_samples_per_split`
+- `inference.batch_size`
+- `inference.max_new_tokens`
+- `tmm.batch_size`
+- `plots.worst_count`
+- `plots.best_count`
+- `plots.mean_count`
+
+输出内容：
+
+- `summary.json`
+- `split_summaries.json`
+- `selected_samples.json`
+- `results/train.jsonl`
+- `results/val.jsonl`
+- `plots/train/*.png`
+- `plots/val/*.png`
+- `plots/comparison/*.png`
+- `samples/train/best/*.png`
+- `samples/train/worst/*.png`
+- `samples/train/mean/*.png`
+- `samples/val/best/*.png`
+- `samples/val/worst/*.png`
+- `samples/val/mean/*.png`

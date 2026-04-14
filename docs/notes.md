@@ -1,58 +1,67 @@
 # 本次修改摘要
 
 ## 需求
-- 给 `our_work/pretrain` 训练入口真正接上：
-  - `max_grad_norm`
-  - `lr_scheduler_type`
-  - `warmup_ratio`
-- 同时在 4 卡训练配置里启用：
-  - `max_grad_norm: 1.0`
-  - `lr_scheduler_type: cosine`
-  - `warmup_ratio: 0.01`
+- 在 `our_work` 下新增独立 `eval` 模块
+- 通过 YAML 配置统一管理参数
+- 同时评估 `train + val`
+- 各自随机抽样固定数量样本
+- 批量生成预测结构
+- 批量回算预测光谱
+- 计算目标光谱误差
+- 输出汇总 JSON/JSONL 与样本级可视化
 
 ## 实际修改
-- `our_work/pretrain/scripts/run_pretrain.py`
-  - `build_trainer(...)` 新增参数：
-    - `lr_scheduler_type`
-    - `warmup_ratio`
-    - `max_grad_norm`
-  - 这三个参数现在会真实传给 `TrainingArguments`
-  - `main()` 里新增从 YAML `training.*` 读取这三个值
-- `our_work/pretrain/configs/train/a100_4gpu.yaml`
-  - `training.lr_scheduler_type: cosine`
-  - `training.warmup_ratio: 0.01`
-  - `training.max_grad_norm: 1.0`
-- `tests/our_work/pretrain/test_training_smoke.py`
-  - build_trainer smoke 新增断言：
-    - `lr_scheduler_type`
-    - `warmup_ratio`
-    - `max_grad_norm`
+- `our_work/eval/__init__.py`
+  - 导出 `run_eval_suite`
+- `our_work/eval/dataset.py`
+  - 新增 split shard 解析与 reservoir 随机抽样
+- `our_work/eval/metrics.py`
+  - 新增 split 汇总统计、最好/最差/均值样本选择
+- `our_work/eval/reports.py`
+  - 新增 run 目录创建、JSON/JSONL、配置快照写出
+- `our_work/eval/plots.py`
+  - 新增 RMSE/MAE 直方图
+  - 新增 train-vs-val 对比图
+  - 新增按目标层数误差图
+  - 新增样本级序列与光谱对比图
+- `our_work/eval/pipeline.py`
+  - 新增配置驱动的主评测流程
+  - 支持：
+    - checkpoint 加载
+    - train/val 抽样
+    - 批量结构生成
+    - 分批 TMM 回算
+    - split 汇总与对比
+    - 样本级 best / worst / mean 图
+- `our_work/eval/scripts/run_eval_suite.py`
+  - 新增 CLI 入口：只收 `--config`
+- `our_work/eval/configs/base_eval.yaml`
+  - 新增默认评测配置
+- `tests/our_work/eval/test_eval_suite.py`
+  - 新增端到端 smoke 测试
 - `README.md`
-  - 补充 4 卡训练配置要点说明：
-    - `lr_scheduler_type: cosine`
-    - `warmup_ratio: 0.01`
-    - `max_grad_norm: 1.0`
+  - 补充 `our_work Eval Suite` 说明、配置与输出目录
 
 ## 说明
-- 如果你现在的训练环境里 `/dev/shm` 真的已经是 `500G`，那从容量上看，之前那种 `No space left on device` 理论上应该不会再是“共享内存总量太小”的问题。
-- 但前提是：
-  - 训练进程**实际看到的** `/dev/shm` 也是这 500G
-  - 不是宿主机改了、容器里还是小 shm
-- 这点你仍然应该在训练 shell 里再确认一次：
-  - `df -h /dev/shm`
+- 新模块优先复用现有：
+  - `our_work/pretrain/model/generation.py`
+  - `our_work/data_gen/pipeline/simulator.py`
+- 重计算放在 GPU：
+  - 模型推理
+  - TMM 批量计算
+- 图片和报告仍在 CPU 侧生成
 
 ## 验证
-- `D:\\anaconda\\envs\\oneday\\python.exe -m compileall our_work/pretrain tests/our_work/pretrain`
-  - 通过
-- `D:\\anaconda\\envs\\oneday\\python.exe -c "import yaml, pathlib; cfg=yaml.safe_load(pathlib.Path('our_work/pretrain/configs/train/a100_4gpu.yaml').read_text(encoding='utf-8')); print(cfg['training']['lr_scheduler_type'], cfg['training']['warmup_ratio'], cfg['training']['max_grad_norm'])"`
-  - 结果：`cosine 0.01 1.0`
+- `D:\\anaconda\\envs\\oneday\\python.exe -m compileall our_work/eval tests/our_work/eval README.md`
+  - 结果：通过
+- `pytest`
+  - `D:\\anaconda\\envs\\oneday\\python.exe -m pytest tests/our_work/eval/test_eval_suite.py -q`
+  - 当前 Windows 环境仍会被 session 收尾的临时目录权限问题打断，没拿到干净退出码
 - 手工 smoke
-  - 构造最小 Trainer，并传入：
-    - `lr_scheduler_type='cosine'`
-    - `warmup_ratio=0.01`
-    - `max_grad_norm=1.0`
-  - 结果：通过，输出 `sched-grad-smoke-ok`
+  - 构造最小 checkpoint / dataset / database
+  - monkeypatch 结构生成与 TMM 回算
+  - 结果：通过，输出 `eval-suite-manual-ok`
 
 ## Git
-- branch: `feat/pretrain-scheduler-grad-guard`
+- branch: `feat/our-work-eval-suite`
 - commit: pending
