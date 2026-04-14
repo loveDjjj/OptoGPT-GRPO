@@ -131,6 +131,8 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 可选：
 
 - `matplotlib`
+- `tensorboard`
+  `our_work/pretrain` 的实时损失、学习率、梯度范数等可视化默认通过 TensorBoard 查看。
   `our_work/data_gen` 自动分析和评测绘图都会用到。
 
 ## our_work 服务器部署与运行
@@ -229,6 +231,7 @@ torch 2.x.x cuda True
   - `training.logging_steps: 1000`
   - `training.eval_steps: 100000`
   - `training.save_steps: 50000`
+  - `monitoring.tensorboard/jsonl/csv/save_plots: true`
   - 评估路径会先把 logits 预处理成 `argmax token ids` 再做 metrics，避免完整收集 `[batch, seq_len, vocab]` 级别的大张量
   - `distributed.*` 只有在 `torchrun --nproc_per_node=...` 的真实多卡环境下才会生效；单进程 `python run_pretrain.py ...` 会忽略这部分并清理脏的 DDP 环境变量
 - `base_gpt.yaml`
@@ -520,12 +523,30 @@ python our_work/pretrain/scripts/run_pretrain.py \
 - `outputs/our_work/pretrain/base_train/checkpoint-*/config.json`
 - `outputs/our_work/pretrain/base_train/checkpoint-*/model.safetensors`
 - `outputs/our_work/pretrain/base_train/checkpoint-*/vocab.json`
+- `outputs/our_work/pretrain/base_train/tensorboard/`
+- `outputs/our_work/pretrain/base_train/metrics/train_metrics.jsonl`
+- `outputs/our_work/pretrain/base_train/metrics/eval_metrics.jsonl`
+- `outputs/our_work/pretrain/base_train/metrics/train_metrics.csv`
+- `outputs/our_work/pretrain/base_train/metrics/eval_metrics.csv`
+- `outputs/our_work/pretrain/base_train/plots/train_loss.png`
+- `outputs/our_work/pretrain/base_train/plots/learning_rate.png`
+- `outputs/our_work/pretrain/base_train/plots/grad_norm.png`
+- `outputs/our_work/pretrain/base_train/plots/eval_loss.png`
+- `outputs/our_work/pretrain/base_train/plots/eval_token_accuracy.png`
+- `outputs/our_work/pretrain/base_train/plots/overview.png`
 
 你可以检查：
 
 ```bash
 ls outputs/our_work/pretrain/base_train
 ls outputs/our_work/pretrain/base_train/checkpoint-1
+```
+
+TensorBoard 实时查看命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+tensorboard --logdir outputs/our_work/pretrain/base_train/tensorboard --bind_all
 ```
 
 4 卡 A100 正式命令：

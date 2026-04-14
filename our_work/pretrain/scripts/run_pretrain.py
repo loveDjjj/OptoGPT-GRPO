@@ -22,6 +22,7 @@ from our_work._shared.io.config import load_yaml_config, resolve_repo_path
 from our_work.pretrain.dataset.collator import SpectralCausalCollator
 from our_work.pretrain.dataset.hf_dataset import load_split_records
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
+from our_work.pretrain.monitoring import PretrainVisualizationCallback
 from our_work.pretrain.model.configuration_spectral_gpt import SpectralGPTConfig
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
 from our_work.pretrain.trainer.metrics import compute_token_accuracy, preprocess_logits_for_metrics
@@ -93,6 +94,7 @@ def build_trainer(
     ddp_find_unused_parameters: bool | None = None,
     ddp_backend: str | None = None,
     save_total_limit: int | None = None,
+    callbacks: list | None = None,
 ) -> Trainer:
     _ensure_trainer_dataset_namespace()
     distributed_requested = _distributed_training_requested()
@@ -135,6 +137,7 @@ def build_trainer(
         data_collator=collator,
         compute_metrics=compute_token_accuracy,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+        callbacks=callbacks,
     )
 
 
@@ -220,6 +223,17 @@ def main() -> None:
         ddp_find_unused_parameters=train_yaml.get("distributed", {}).get("ddp_find_unused_parameters"),
         ddp_backend=train_yaml.get("distributed", {}).get("backend"),
         save_total_limit=train_yaml["training"].get("save_total_limit"),
+        callbacks=[
+            PretrainVisualizationCallback(
+                output_dir=train_yaml["training"]["output_dir"],
+                enable_tensorboard=train_yaml.get("monitoring", {}).get("tensorboard", True),
+                enable_jsonl=train_yaml.get("monitoring", {}).get("jsonl", True),
+                enable_csv=train_yaml.get("monitoring", {}).get("csv", True),
+                save_plots=train_yaml.get("monitoring", {}).get("save_plots", True),
+                plot_every_eval=train_yaml.get("monitoring", {}).get("plot_every_eval", True),
+                flush_secs=int(train_yaml.get("monitoring", {}).get("flush_secs", 10)),
+            )
+        ],
     )
     trainer.train()
 

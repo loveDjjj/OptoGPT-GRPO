@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 import torch
 
 from our_work.pretrain.dataset.hf_dataset import load_parquet_records
+from our_work.pretrain.monitoring import PretrainVisualizationCallback
 from our_work.pretrain.model.configuration_spectral_gpt import SpectralGPTConfig
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
 from our_work.pretrain.trainer.metrics import compute_token_accuracy, preprocess_logits_for_metrics
@@ -233,3 +235,51 @@ def test_model_forward_disables_cache_when_labels_are_present() -> None:
     )
 
     assert outputs.past_key_values is None
+
+
+def test_pretrain_visualization_callback_writes_metric_files(tmp_path: Path) -> None:
+    callback = PretrainVisualizationCallback(
+        output_dir=tmp_path / "run",
+        enable_tensorboard=False,
+        enable_jsonl=True,
+        enable_csv=True,
+        save_plots=False,
+        plot_every_eval=False,
+    )
+    args = SimpleNamespace(
+        per_device_train_batch_size=16,
+        gradient_accumulation_steps=2,
+        world_size=1,
+    )
+    state = SimpleNamespace(
+        is_world_process_zero=True,
+        global_step=200,
+        epoch=0.1,
+    )
+
+    callback.on_train_begin(args, state, control=None)
+    callback.on_log(
+        args,
+        state,
+        control=None,
+        logs={"loss": 9.5, "grad_norm": 0.8, "learning_rate": 1.0e-4, "epoch": 0.1},
+    )
+    callback.on_evaluate(
+        args,
+        state,
+        control=None,
+        metrics={"eval_loss": 9.2, "eval_token_accuracy": 0.37, "eval_runtime": 12.5},
+    )
+    callback.on_train_end(args, state, control=None)
+
+    train_jsonl = tmp_path / "run" / "metrics" / "train_metrics.jsonl"
+    eval_jsonl = tmp_path / "run" / "metrics" / "eval_metrics.jsonl"
+    train_csv = tmp_path / "run" / "metrics" / "train_metrics.csv"
+    eval_csv = tmp_path / "run" / "metrics" / "eval_metrics.csv"
+
+    assert train_jsonl.exists()
+    assert eval_jsonl.exists()
+    assert train_csv.exists()
+    assert eval_csv.exists()
+    assert '"loss": 9.5' in train_jsonl.read_text(encoding="utf-8")
+    assert '"eval_loss": 9.2' in eval_jsonl.read_text(encoding="utf-8")

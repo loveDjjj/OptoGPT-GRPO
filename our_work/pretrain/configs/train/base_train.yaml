@@ -37,3 +37,17 @@ distributed:
   # 单卡不会实际用到 DDP，这里保留多卡参数是为了后续切 4/8 卡时直接复用。
   backend: nccl
   ddp_find_unused_parameters: false
+
+monitoring:
+  # 训练过程中默认把标量写到 TensorBoard，便于实时查看。
+  tensorboard: true
+  # 训练/验证指标持续追加到 JSONL，便于恢复和二次分析。
+  jsonl: true
+  # 同步维护 CSV，方便直接用表格或脚本查看。
+  csv: true
+  # 训练结束后以及每次验证后自动更新 PNG 曲线图。
+  save_plots: true
+  # 每次 eval 后更新一轮 PNG，总览图不会等到最后才出现。
+  plot_every_eval: true
+  # TensorBoard writer 的默认 flush 周期，单位秒。
+  flush_secs: 10
