@@ -1,5 +1,8 @@
 device: auto
 
+# 8 卡正式训练默认固定随机种子；各 rank 会在入口里自动叠加 rank_offset。
+seed: 42
+
 model:
   checkpoint_dir: outputs/our_work/pretrain/a100_8gpu
 

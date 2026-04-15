@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from our_work._shared.io.config import load_yaml_config, resolve_repo_path
+from our_work._shared.utils.seed import set_global_seed
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
 from our_work.rl.dataset import load_rl_split_records
@@ -68,6 +69,7 @@ def main(argv: list[str] | None = None) -> None:
         timeout_minutes=int(distributed_cfg.get("timeout_minutes", 30)),
         backend=distributed_cfg.get("backend"),
     )
+    set_global_seed(int(config.get("seed", 42)), rank_offset=dist_ctx.rank)
     resume_checkpoint = config["training"].get("resume_from_checkpoint")
     components = load_rl_components(resume_checkpoint or config["model"]["checkpoint_dir"], device=dist_ctx.device)
 

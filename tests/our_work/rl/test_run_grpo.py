@@ -89,3 +89,73 @@ def test_run_grpo_configs_target_a100_outputs() -> None:
     base = yaml.safe_load(Path("our_work/rl/configs/grpo/a100_4gpu.yaml").read_text(encoding="utf-8"))
     assert base["model"]["checkpoint_dir"] == "outputs/our_work/pretrain/a100_4gpu"
     assert base["data"]["dataset_dir"] == "outputs/our_work/data_gen/a100_4gpu"
+
+
+def test_run_grpo_main_sets_seed_with_rank_offset(monkeypatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "grpo.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "seed": 123,
+                "device": "cpu",
+                "model": {"checkpoint_dir": str(tmp_path / "checkpoint")},
+                "data": {"dataset_dir": str(tmp_path / "dataset")},
+                "training": {"output_dir": str(tmp_path / "output")},
+                "rollout": {},
+                "reward": {
+                    "tmm": {
+                        "database_path": "database",
+                        "wavelength_range_um": [2.0, 15.0],
+                        "num_points": 8,
+                    }
+                },
+                "distributed": {"backend": "gloo", "timeout_minutes": 9},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    class DummyCtx:
+        enabled = False
+        rank = 3
+        world_size = 4
+        local_rank = 3
+        device = "cpu"
+        is_main = False
+
+    monkeypatch.setattr(
+        "our_work.rl.scripts.run_grpo.init_distributed",
+        lambda *, device, timeout_minutes, backend=None: DummyCtx(),
+    )
+    monkeypatch.setattr(
+        "our_work.rl.scripts.run_grpo.load_rl_components",
+        lambda checkpoint_dir, device: object(),
+    )
+    monkeypatch.setattr(
+        "our_work.rl.scripts.run_grpo.load_rl_split_records",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "our_work.rl.scripts.run_grpo.set_global_seed",
+        lambda seed, rank_offset=0: captured.update({"seed": seed, "rank_offset": rank_offset}),
+        raising=False,
+    )
+
+    class DummyTrainer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def train(self, **kwargs):
+            captured["train_called"] = True
+
+    monkeypatch.setattr("our_work.rl.scripts.run_grpo.SpectralGRPOTrainer", DummyTrainer)
+    monkeypatch.setattr("our_work.rl.scripts.run_grpo.barrier", lambda: None)
+    monkeypatch.setattr("our_work.rl.scripts.run_grpo.cleanup_distributed", lambda: None)
+
+    main(["--config", str(config_path)])
+
+    assert captured["seed"] == 123
+    assert captured["rank_offset"] == 3

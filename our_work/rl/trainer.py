@@ -105,6 +105,15 @@ class SpectralGRPOTrainer:
         if self.resume_checkpoint is not None:
             self._load_checkpoint_state(self.resume_checkpoint)
 
+    def _set_policy_eval(self) -> None:
+        # RL rollout/scoring should reuse a deterministic policy forward path.
+        self.raw_model.eval()
+        self.model.eval()
+
+    def _set_policy_train(self) -> None:
+        self.raw_model.train()
+        self.model.train()
+
     def _make_dataloader(self, dataset: SpectralRecordDataset, *, shuffle: bool) -> tuple[DataLoader, DistributedSampler | None]:
         sampler = None
         if self.dist_ctx.enabled:
@@ -209,7 +218,7 @@ class SpectralGRPOTrainer:
 
     def _evaluate(self, dataloader: DataLoader) -> dict[str, float]:
         previous_training = bool(self.raw_model.training)
-        self.raw_model.eval()
+        self._set_policy_eval()
         total_reward = 0.0
         total_count = 0
         for batch in dataloader:
@@ -241,13 +250,13 @@ class SpectralGRPOTrainer:
         reduced = reduce_tensor(reward_tensor, op="sum")
         mean_reward = float(reduced[0].item() / max(1.0, reduced[1].item()))
         if previous_training:
-            self.raw_model.train()
-            self.model.train()
+            self._set_policy_train()
+        else:
+            self._set_policy_eval()
         return {"mean_eval_reward": mean_reward}
 
     def train(self, train_dataset: SpectralRecordDataset, eval_dataset: SpectralRecordDataset | None = None) -> None:
-        self.raw_model.train()
-        self.model.train()
+        self._set_policy_eval()
         train_loader, train_sampler = self._make_dataloader(train_dataset, shuffle=True)
         eval_loader = None
         if eval_dataset is not None and len(eval_dataset) > 0:

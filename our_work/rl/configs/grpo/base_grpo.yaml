@@ -1,5 +1,8 @@
 device: auto
 
+# 为 rollout 抽样和 DataLoader shuffle 提供可复现实验入口；多卡时会再叠加 rank_offset。
+seed: 42
+
 model:
   # 默认单卡使用 base_train checkpoint；多卡请改用 a100_4gpu / a100_8gpu 对应目录。
   checkpoint_dir: outputs/our_work/pretrain/base_train
