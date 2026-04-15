@@ -207,6 +207,8 @@ def run_eval_suite(config: dict) -> dict:
 
     splits = list(config["data"].get("splits", ["train", "val"]))
     max_samples_cfg = config["data"].get("max_samples_per_split", 512)
+    sample_mode = str(config["data"].get("sample_mode", "random"))
+    max_shards_cfg = config["data"].get("max_shards_per_split")
     inference_cfg = config["inference"]
     tmm_cfg = config["tmm"]
     plots_cfg = config["plots"]
@@ -217,11 +219,17 @@ def run_eval_suite(config: dict) -> dict:
             max_samples = int(max_samples_cfg.get(split_name, 0))
         else:
             max_samples = int(max_samples_cfg)
-        records, total_count = sample_split_records(
+        if isinstance(max_shards_cfg, dict):
+            max_shards = max_shards_cfg.get(split_name)
+        else:
+            max_shards = max_shards_cfg
+        records, total_count, scanned_shard_count = sample_split_records(
             dataset_dir,
             split_name,
             max_samples=max_samples,
             seed=int(config["data"].get("seed", 42)) + split_index,
+            sample_mode=sample_mode,
+            max_shards=None if max_shards is None else int(max_shards),
         )
         predicted_groups = _predict_token_groups(
             model=model,
@@ -246,9 +254,10 @@ def run_eval_suite(config: dict) -> dict:
             tmm_device=tmm_cfg.get("device"),
         )
         summary = summarize_rows(rows)
-        summary["sample_mode"] = str(config["data"].get("sample_mode", "random"))
+        summary["sample_mode"] = sample_mode
         summary["sampled_count"] = len(rows)
         summary["available_count"] = int(total_count)
+        summary["scanned_shard_count"] = int(scanned_shard_count)
         split_summaries[split_name] = summary
 
         if output_cfg.get("save_jsonl", True):

@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from our_work.eval.dataset import select_split_shard_paths
 from our_work.eval.pipeline import run_eval_suite
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
 from our_work.pretrain.model.configuration_spectral_gpt import SpectralGPTConfig
@@ -55,6 +56,31 @@ def _write_tiny_dataset(base: Path) -> Path:
     pd.DataFrame.from_records(records[1:]).to_parquet(dataset_dir / "shards" / "shard-val.parquet", index=False)
     (dataset_dir / "splits" / "split_manifest.json").write_text(
         json.dumps({"train": ["shard-train.parquet"], "val": ["shard-val.parquet"], "test": []}),
+        encoding="utf-8",
+    )
+    return dataset_dir
+
+
+def _write_multi_shard_dataset(base: Path) -> Path:
+    dataset_dir = base / "dataset_multi"
+    (dataset_dir / "shards").mkdir(parents=True)
+    (dataset_dir / "splits").mkdir(parents=True)
+    shard_names = []
+    for idx in range(4):
+        shard_name = f"shard-train-{idx:02d}.parquet"
+        shard_names.append(shard_name)
+        pd.DataFrame.from_records(
+            [
+                {
+                    "sample_id": f"train-{idx:02d}",
+                    "layer_count": 1,
+                    "structure_tokens": ["Ge_10"],
+                    "spectrum_rt": [0.1] * 4 + [0.9] * 4,
+                }
+            ]
+        ).to_parquet(dataset_dir / "shards" / shard_name, index=False)
+    (dataset_dir / "splits" / "split_manifest.json").write_text(
+        json.dumps({"train": shard_names, "val": [], "test": []}),
         encoding="utf-8",
     )
     return dataset_dir
@@ -137,6 +163,8 @@ def test_run_eval_suite_writes_expected_outputs(tmp_path: Path, monkeypatch: pyt
     assert (run_dir / "results" / "val.jsonl").exists()
     assert (run_dir / "plots" / "comparison" / "train_vs_val_rmse.png").exists()
     assert any((run_dir / "samples" / "train").rglob("*.png"))
+    summary = json.loads((run_dir / "split_summaries.json").read_text(encoding="utf-8"))
+    assert summary["train"]["sample_mode"] == "random"
 
 
 def test_eval_records_buckets_tmm_batches_by_prediction_layer_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,3 +204,14 @@ def test_eval_records_buckets_tmm_batches_by_prediction_layer_count(monkeypatch:
 
     assert calls == [[1, 1], [2]]
     assert all(row["generated_valid"] for row in rows)
+
+
+def test_select_split_shard_paths_supports_head_and_random_subset(tmp_path: Path) -> None:
+    dataset_dir = _write_multi_shard_dataset(tmp_path)
+
+    head_paths = select_split_shard_paths(dataset_dir, "train", sample_mode="head_shards", max_shards=2, seed=42)
+    assert [path.name for path in head_paths] == ["shard-train-00.parquet", "shard-train-01.parquet"]
+
+    random_paths = select_split_shard_paths(dataset_dir, "train", sample_mode="shard_subset_random", max_shards=2, seed=7)
+    assert len(random_paths) == 2
+    assert len({path.name for path in random_paths}) == 2

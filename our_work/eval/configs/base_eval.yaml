@@ -9,10 +9,13 @@ paths:
 
 data:
   splits: [train, val]
-  sample_mode: random
+  sample_mode: head_shards
   max_samples_per_split:
     train: 102400
     val: 10240
+  max_shards_per_split:
+    train: 32
+    val: 8
   seed: 42
 
 inference:

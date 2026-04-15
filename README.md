@@ -733,13 +733,24 @@ python our_work/eval/scripts/run_eval_suite.py --config our_work/eval/configs/ba
 - `paths.database_dir`
 - `paths.output_dir`
 - `data.splits`
+- `data.sample_mode`
 - `data.max_samples_per_split`
+- `data.max_shards_per_split`
 - `inference.batch_size`
 - `inference.max_new_tokens`
 - `tmm.batch_size`
 - `plots.worst_count`
 - `plots.best_count`
 - `plots.mean_count`
+
+采样模式：
+
+- `random`
+  - 扫描整个 split 的所有 shard，用 reservoir sampling 做严格随机抽样
+- `head_shards`
+  - 只扫描前若干个 shard，速度最快，但样本可能有顺序偏差
+- `shard_subset_random`
+  - 先随机选若干个 shard，再只扫描这些 shard，速度和代表性折中
 
 输出内容：
 
