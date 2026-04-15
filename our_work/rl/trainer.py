@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
 from our_work.rl.dataset import SpectralRecordDataset, rl_batch_collator
+from our_work.rl.monitoring import RLVisualizationMonitor
 from our_work.rl.objective import group_relative_advantages, grpo_clipped_surrogate
 from our_work.rl.policy import RolloutConfig, batch_sequence_logprobs, sample_structure_rollouts
 from our_work.rl.reward import compute_rollout_rewards
@@ -102,6 +103,17 @@ class SpectralGRPOTrainer:
         self.checkpoints_dir = self.run_dir / "checkpoints"
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        monitoring_cfg = config.get("monitoring", {})
+        self.monitoring = RLVisualizationMonitor(
+            output_dir=self.run_dir,
+            is_main=self.dist_ctx.is_main,
+            enable_tensorboard=monitoring_cfg.get("tensorboard", True),
+            enable_jsonl=monitoring_cfg.get("jsonl", True),
+            enable_csv=monitoring_cfg.get("csv", True),
+            save_plots=monitoring_cfg.get("save_plots", True),
+            plot_every_eval=monitoring_cfg.get("plot_every_eval", True),
+            flush_secs=int(monitoring_cfg.get("flush_secs", 10)),
+        )
         if self.resume_checkpoint is not None:
             self._load_checkpoint_state(self.resume_checkpoint)
 
@@ -330,11 +342,12 @@ class SpectralGRPOTrainer:
 
                 loss.backward()
                 if (batch_index + 1) % self.gradient_accumulation_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm)
+                    grad_norm = float(torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm).item())
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
                     self.global_step += 1
+                    current_lr = float(self.optimizer.param_groups[0]["lr"])
                     if batch_index + 1 < len(train_loader):
                         self.resume_epoch = epoch
                         self.resume_batch_index = batch_index + 1
@@ -353,29 +366,24 @@ class SpectralGRPOTrainer:
                     progress.update(1)
 
                     if self.dist_ctx.is_main and self.global_step % self.log_steps == 0:
-                        metrics_path = self.metrics_dir / "train_metrics.jsonl"
-                        metrics_path.parent.mkdir(parents=True, exist_ok=True)
-                        with metrics_path.open("a", encoding="utf-8") as handle:
-                            handle.write(
-                                json.dumps(
-                                    {
-                                        "step": self.global_step,
-                                        "loss": float(loss.item() * self.gradient_accumulation_steps),
-                                        "mean_reward": float(rewards.mean().item()),
-                                        "valid_ratio": float(reward_outputs["ok_mask"].float().mean().item()),
-                                    },
-                                    ensure_ascii=False,
-                                )
-                                + "\n"
-                            )
+                        self.monitoring.log_train(
+                            {
+                                "step": self.global_step,
+                                "epoch": float(epoch + 1),
+                                "loss": float(loss.item() * self.gradient_accumulation_steps),
+                                "mean_reward": float(rewards.mean().item()),
+                                "valid_ratio": float(reward_outputs["ok_mask"].float().mean().item()),
+                                "learning_rate": current_lr,
+                                "grad_norm": grad_norm,
+                            }
+                        )
 
                     if self.save_steps > 0 and self.global_step % self.save_steps == 0:
                         self._save_checkpoint(self.global_step)
                     if eval_loader is not None and self.eval_steps > 0 and self.global_step % self.eval_steps == 0:
                         metrics = self._evaluate(eval_loader)
                         if self.dist_ctx.is_main:
-                            with (self.metrics_dir / "eval_metrics.jsonl").open("a", encoding="utf-8") as handle:
-                                handle.write(json.dumps({"step": self.global_step, **metrics}, ensure_ascii=False) + "\n")
+                            self.monitoring.log_eval({"step": self.global_step, **metrics})
 
         if (len(train_loader) % self.gradient_accumulation_steps) != 0:
             torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm)
@@ -385,4 +393,5 @@ class SpectralGRPOTrainer:
             self.global_step += 1
             self.resume_epoch = self.epochs
             self.resume_batch_index = 0
+        self.monitoring.close()
         self._save_checkpoint(self.global_step)

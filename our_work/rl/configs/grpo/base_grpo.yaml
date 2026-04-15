@@ -73,3 +73,11 @@ distributed:
   # 单卡默认不会启用 DDP，这里保留多卡参数是为了后续切换方便。
   backend: nccl
   timeout_minutes: 30
+
+monitoring:
+  tensorboard: true
+  jsonl: true
+  csv: true
+  save_plots: true
+  plot_every_eval: true
+  flush_secs: 10

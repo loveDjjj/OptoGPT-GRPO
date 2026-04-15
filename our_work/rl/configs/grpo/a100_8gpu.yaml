@@ -64,3 +64,11 @@ reward:
 distributed:
   backend: nccl
   timeout_minutes: 30
+
+monitoring:
+  tensorboard: true
+  jsonl: true
+  csv: true
+  save_plots: true
+  plot_every_eval: true
+  flush_secs: 10

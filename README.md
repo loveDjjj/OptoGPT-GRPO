@@ -246,6 +246,7 @@ torch 2.x.x cuda True
   - `rollout.batch_size: 512`
   - `scoring.batch_size: 1024`
   - `reward.tmm.batch_size: 4096`
+  - `monitoring.tensorboard/jsonl/csv/save_plots: true`
 
 关键约束：
 
@@ -699,7 +700,21 @@ our_work grpo: 100%|██████████| ... [loss=..., reward=..., v
 
 - `outputs/our_work/rl/<run-name>/metrics/train_metrics.jsonl`
 - `outputs/our_work/rl/<run-name>/metrics/eval_metrics.jsonl`
+- `outputs/our_work/rl/<run-name>/metrics/train_metrics.csv`
+- `outputs/our_work/rl/<run-name>/metrics/eval_metrics.csv`
+- `outputs/our_work/rl/<run-name>/plots/train_loss.png`
+- `outputs/our_work/rl/<run-name>/plots/train_mean_reward.png`
+- `outputs/our_work/rl/<run-name>/plots/train_valid_ratio.png`
+- `outputs/our_work/rl/<run-name>/plots/eval_mean_reward.png`
+- `outputs/our_work/rl/<run-name>/plots/overview.png`
+- `outputs/our_work/rl/<run-name>/tensorboard/`
 - `outputs/our_work/rl/<run-name>/checkpoints/checkpoint-*`
+
+如需实时查看 RL 标量，可执行：
+
+```bash
+tensorboard --logdir outputs/our_work/rl/<run-name>/tensorboard --bind_all
+```
 
 ### 5. 只部署已有 checkpoint 做评测
 如果你不想在服务器上重训，只想评测已有模型，需要同步：

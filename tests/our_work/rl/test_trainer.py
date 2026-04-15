@@ -81,6 +81,14 @@ def _tiny_config(output_dir: str) -> dict:
                 "device": "cpu",
             },
         },
+        "monitoring": {
+            "tensorboard": False,
+            "jsonl": False,
+            "csv": False,
+            "save_plots": False,
+            "plot_every_eval": False,
+            "flush_secs": 1,
+        },
     }
 
 
@@ -276,3 +284,83 @@ def test_train_keeps_policy_in_eval_mode_for_rollout_and_scoring(tmp_path: Path,
     assert observed_modes == [("rollout", False, False), ("scoring", False, False)]
     assert trainer.raw_model.training is False
     assert trainer.model.training is False
+
+
+def test_train_writes_rl_monitoring_artifacts(tmp_path: Path, monkeypatch) -> None:
+    config = _tiny_config(str(tmp_path / "run"))
+    config["training"]["eval_steps"] = 1
+    config["monitoring"] = {
+        "tensorboard": False,
+        "jsonl": True,
+        "csv": True,
+        "save_plots": True,
+        "plot_every_eval": True,
+        "flush_secs": 1,
+    }
+    trainer = SpectralGRPOTrainer(
+        components=_tiny_components(),
+        config=config,
+        run_dir=tmp_path / "run",
+        dist_ctx=_dist_ctx(),
+    )
+    dataset = SpectralRecordDataset(
+        [
+            {
+                "sample_id": "sample-0",
+                "spectrum_rt": [0.1] * 16,
+                "structure_tokens": ["Ge_10"],
+            }
+        ]
+    )
+
+    def fake_rollouts(model, tokenizer, spectra, sample_ids, *, group_size, config):
+        return [
+            RolloutSample(
+                sample_id="sample-0",
+                target_index=0,
+                candidate_index=0,
+                token_ids=[tokenizer.token_to_id["Ge_10"], tokenizer.eos_token_id],
+                structure_tokens=["Ge_10"],
+                sequence_logprob=0.0,
+                terminated_by_eos=True,
+            ),
+            RolloutSample(
+                sample_id="sample-0",
+                target_index=0,
+                candidate_index=1,
+                token_ids=[tokenizer.token_to_id["SiO2_20"], tokenizer.eos_token_id],
+                structure_tokens=["SiO2_20"],
+                sequence_logprob=0.0,
+                terminated_by_eos=True,
+            ),
+        ]
+
+    def fake_rewards(**kwargs):
+        return {
+            "rewards": torch.tensor([1.0, 0.0], dtype=torch.float32),
+            "spectrum_losses": torch.tensor([0.0, 1.0], dtype=torch.float32),
+            "ok_mask": torch.tensor([True, True]),
+        }
+
+    def fake_logprobs(model, tokenizer, spectra, token_id_groups, *, batch_size):
+        base = trainer.raw_model.lm_head.weight[0, 0]
+        values = torch.stack([base + (0.1 * index) for index in range(len(token_id_groups))])
+        return values, torch.ones((len(token_id_groups), 1), dtype=torch.bool, device=values.device)
+
+    monkeypatch.setattr("our_work.rl.trainer.sample_structure_rollouts", fake_rollouts)
+    monkeypatch.setattr("our_work.rl.trainer.compute_rollout_rewards", lambda **kwargs: fake_rewards(**kwargs))
+    monkeypatch.setattr("our_work.rl.trainer.batch_sequence_logprobs", fake_logprobs)
+    monkeypatch.setattr("our_work.rl.trainer.SpectralGRPOTrainer._evaluate", lambda self, dataloader: {"mean_eval_reward": 0.75})
+
+    trainer.train(train_dataset=dataset, eval_dataset=dataset)
+
+    metrics_dir = tmp_path / "run" / "metrics"
+    plots_dir = tmp_path / "run" / "plots"
+    assert (metrics_dir / "train_metrics.jsonl").exists()
+    assert (metrics_dir / "eval_metrics.jsonl").exists()
+    assert (metrics_dir / "train_metrics.csv").exists()
+    assert (metrics_dir / "eval_metrics.csv").exists()
+    assert (plots_dir / "train_loss.png").exists()
+    assert (plots_dir / "train_mean_reward.png").exists()
+    assert (plots_dir / "train_valid_ratio.png").exists()
+    assert (plots_dir / "eval_mean_reward.png").exists()
