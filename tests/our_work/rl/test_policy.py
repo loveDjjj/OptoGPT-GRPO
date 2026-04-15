@@ -43,6 +43,31 @@ def test_sample_structure_rollouts_returns_grouped_samples() -> None:
     assert {sample.sample_id for sample in samples} == {"sample-0", "sample-1"}
 
 
+def test_sample_structure_rollouts_respects_rollout_batch_size(monkeypatch) -> None:
+    model, tokenizer, spectra = _tiny_components()
+    call_sizes: list[int] = []
+    original_forward = model.forward
+
+    def wrapped_forward(*args, **kwargs):
+        call_sizes.append(int(kwargs["spectra"].shape[0]))
+        return original_forward(*args, **kwargs)
+
+    monkeypatch.setattr(model, "forward", wrapped_forward)
+
+    samples = sample_structure_rollouts(
+        model,
+        tokenizer,
+        spectra,
+        ["sample-0", "sample-1"],
+        group_size=3,
+        config=RolloutConfig(decode="greedy", max_new_tokens=2, batch_size=2),
+    )
+
+    assert len(samples) == 6
+    assert all(size <= 2 for size in call_sizes)
+    assert len(call_sizes) == 6
+
+
 def test_batch_sequence_logprobs_returns_one_score_per_sequence() -> None:
     model, tokenizer, spectra = _tiny_components()
     token_id_groups = [

@@ -4,27 +4,29 @@ model:
   checkpoint_dir: outputs/our_work/pretrain/a100_8gpu
 
 data:
-  dataset_dir: outputs/our_work/data_gen/v1
+  dataset_dir: outputs/our_work/data_gen/a100_8gpu
   train_split: train
   eval_split: val
   max_train_samples: null
-  max_eval_samples: 512
-  num_workers: 8
-  prefetch_factor: 4
+  max_eval_samples: 1024
+  num_workers: 0
+  prefetch_factor: null
   pin_memory: true
-  persistent_workers: true
+  persistent_workers: false
 
 training:
   output_dir: outputs/our_work/rl/a100_8gpu
-  per_device_batch_size: 12
-  gradient_accumulation_steps: 2
-  epochs: 1
+  per_device_batch_size: 32
+  gradient_accumulation_steps: 1
+  epochs: 3
   learning_rate: 1.0e-5
   weight_decay: 0.0
   grad_clip_norm: 1.0
-  log_steps: 10
-  eval_steps: 50
-  save_steps: 50
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.01
+  log_steps: 50
+  eval_steps: 1000
+  save_steps: 1000
   clip_epsilon: 0.2
   advantage_mode: zscore
   advantage_eps: 1.0e-6
@@ -37,10 +39,10 @@ rollout:
   top_k: 0
   top_p: 1.0
   max_new_tokens: 12
-  batch_size: 768
+  batch_size: 128
 
 scoring:
-  batch_size: 1536
+  batch_size: 256
 
 reward:
   spectrum_metric: rt_rmse
@@ -53,7 +55,7 @@ reward:
     polarization: 0
     tolerance: 0.001
     complex_dtype: complex64
-    batch_size: 6144
+    batch_size: 128
     device: auto
 
 distributed:

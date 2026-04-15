@@ -634,6 +634,17 @@ cd /srv/OptoGPT-GRPO
 python our_work/rl/scripts/run_grpo.py --config our_work/rl/configs/grpo/base_grpo.yaml
 ```
 
+基础 RL 配置要点：
+
+- `model.checkpoint_dir: outputs/our_work/pretrain/base_train`
+- `data.dataset_dir: outputs/our_work/data_gen/v1`
+- `per_device_batch_size: 16`
+- `rollout.batch_size: 512`
+- `scoring.batch_size: 1024`
+- `reward.tmm.batch_size: 4096`
+- `training.lr_scheduler_type: cosine`
+- `training.warmup_ratio: 0.01`
+
 4 卡 A100 正式命令：
 
 ```bash
@@ -641,12 +652,42 @@ cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=4 our_work/rl/scripts/run_grpo.py --config our_work/rl/configs/grpo/a100_4gpu.yaml
 ```
 
+4 卡 RL 配置要点：
+
+- `model.checkpoint_dir: outputs/our_work/pretrain/a100_4gpu`
+- `data.dataset_dir: outputs/our_work/data_gen/a100_4gpu`
+- `data.num_workers: 0`
+- `per_device_batch_size: 32`
+- `gradient_accumulation_steps: 1`
+- `rollout.batch_size: 128`
+- `scoring.batch_size: 256`
+- `reward.tmm.batch_size: 128`
+- `training.lr_scheduler_type: cosine`
+- `training.warmup_ratio: 0.01`
+- `training.eval_steps: 1000`
+- `training.save_steps: 1000`
+
 8 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=8 our_work/rl/scripts/run_grpo.py --config our_work/rl/configs/grpo/a100_8gpu.yaml
 ```
+
+8 卡 RL 配置要点：
+
+- `model.checkpoint_dir: outputs/our_work/pretrain/a100_8gpu`
+- `data.dataset_dir: outputs/our_work/data_gen/a100_8gpu`
+- `data.num_workers: 0`
+- `per_device_batch_size: 32`
+- `gradient_accumulation_steps: 1`
+- `rollout.batch_size: 128`
+- `scoring.batch_size: 256`
+- `reward.tmm.batch_size: 128`
+- `training.lr_scheduler_type: cosine`
+- `training.warmup_ratio: 0.01`
+- `training.eval_steps: 1000`
+- `training.save_steps: 1000`
 
 典型终端输出：
 

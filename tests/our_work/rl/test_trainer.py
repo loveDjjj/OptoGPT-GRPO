@@ -169,3 +169,43 @@ def test_train_restores_model_to_train_mode_after_eval(tmp_path: Path, monkeypat
 
     assert "mean_eval_reward" in metrics
     assert trainer.raw_model.training is True
+
+
+def test_reward_kwargs_resolve_auto_device_to_runtime_device(tmp_path: Path) -> None:
+    trainer = SpectralGRPOTrainer(
+        components=_tiny_components(),
+        config=_tiny_config(str(tmp_path / "run")),
+        run_dir=tmp_path / "run",
+        dist_ctx=_dist_ctx(),
+    )
+
+    trainer.reward_tmm_cfg["device"] = "auto"
+
+    kwargs = trainer._reward_kwargs()
+
+    assert kwargs["device"] == "cpu"
+
+
+def test_scheduler_configuration_uses_cosine_and_warmup(tmp_path: Path) -> None:
+    config = _tiny_config(str(tmp_path / "run"))
+    config["training"]["lr_scheduler_type"] = "cosine"
+    config["training"]["warmup_ratio"] = 0.1
+    trainer = SpectralGRPOTrainer(
+        components=_tiny_components(),
+        config=config,
+        run_dir=tmp_path / "run",
+        dist_ctx=_dist_ctx(),
+    )
+    dataset = SpectralRecordDataset(
+        [
+            {"sample_id": "sample-0", "spectrum_rt": [0.1] * 16, "structure_tokens": ["Ge_10"]},
+            {"sample_id": "sample-1", "spectrum_rt": [0.1] * 16, "structure_tokens": ["Ge_10"]},
+        ]
+    )
+    train_loader, _ = trainer._make_dataloader(dataset, shuffle=True)
+    update_steps_per_epoch = max(1, (len(train_loader) + trainer.gradient_accumulation_steps - 1) // trainer.gradient_accumulation_steps)
+    trainer.total_training_steps = max(1, trainer.epochs * update_steps_per_epoch)
+    trainer.warmup_steps = int(round(trainer.total_training_steps * trainer.warmup_ratio))
+
+    assert trainer.lr_scheduler_type == "cosine"
+    assert trainer.warmup_steps >= 0

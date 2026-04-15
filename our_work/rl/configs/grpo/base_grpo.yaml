@@ -26,6 +26,8 @@ training:
   learning_rate: 1.0e-5
   weight_decay: 0.0
   grad_clip_norm: 1.0
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.01
   log_steps: 10
   eval_steps: 50
   save_steps: 50

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -90,7 +91,12 @@ class SpectralGRPOTrainer:
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda _: 1.0)
+        self.lr_scheduler_type = str(training_cfg.get("lr_scheduler_type", "linear")).strip().lower()
+        self.warmup_ratio = float(training_cfg.get("warmup_ratio", 0.0))
+        self.warmup_steps_cfg = training_cfg.get("warmup_steps")
+        self.total_training_steps = 1
+        self.warmup_steps = 0
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=self._lr_lambda)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_dir = self.run_dir / "metrics"
         self.checkpoints_dir = self.run_dir / "checkpoints"
@@ -129,8 +135,40 @@ class SpectralGRPOTrainer:
             "batch_size": int(self.reward_tmm_cfg.get("batch_size", self.score_batch_size)),
             "invalid_structure_penalty": self.invalid_structure_penalty,
             "spectrum_metric": self.reward_metric,
-            "device": self.reward_tmm_cfg.get("device", self.dist_ctx.device.type),
+            "device": self._resolve_reward_device(self.reward_tmm_cfg.get("device")),
         }
+
+    def _resolve_reward_device(self, requested_device: str | None) -> str:
+        if requested_device is None:
+            requested = "auto"
+        else:
+            requested = str(requested_device).strip().lower()
+        if requested in {"", "auto"}:
+            if self.dist_ctx.device.type == "cuda":
+                return f"cuda:{self.dist_ctx.device.index}"
+            return self.dist_ctx.device.type
+        if requested == "cuda" and self.dist_ctx.enabled:
+            return f"cuda:{self.dist_ctx.local_rank}"
+        return str(requested_device)
+
+    def _lr_lambda(self, current_step: int) -> float:
+        total_steps = max(1, int(self.total_training_steps))
+        warmup_steps = max(0, min(int(self.warmup_steps), total_steps))
+        step = int(current_step)
+        if warmup_steps > 0 and step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+
+        if self.lr_scheduler_type == "constant":
+            return 1.0
+
+        decay_steps = max(1, total_steps - warmup_steps)
+        progress = float(step - warmup_steps) / float(decay_steps)
+        progress = max(0.0, min(1.0, progress))
+        if self.lr_scheduler_type == "cosine":
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        if self.lr_scheduler_type == "linear":
+            return max(0.0, 1.0 - progress)
+        raise ValueError(f"unsupported lr_scheduler_type: {self.lr_scheduler_type}")
 
     def _save_checkpoint(self, step: int) -> None:
         if not self.dist_ctx.is_main:
@@ -214,6 +252,12 @@ class SpectralGRPOTrainer:
         eval_loader = None
         if eval_dataset is not None and len(eval_dataset) > 0:
             eval_loader, _ = self._make_dataloader(eval_dataset, shuffle=False)
+        update_steps_per_epoch = max(1, math.ceil(len(train_loader) / self.gradient_accumulation_steps))
+        self.total_training_steps = max(1, self.epochs * update_steps_per_epoch)
+        if self.warmup_steps_cfg is not None:
+            self.warmup_steps = int(self.warmup_steps_cfg)
+        else:
+            self.warmup_steps = int(round(self.total_training_steps * self.warmup_ratio))
 
         progress = tqdm(
             range(self.epochs * len(train_loader)),

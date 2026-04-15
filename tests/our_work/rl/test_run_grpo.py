@@ -83,3 +83,9 @@ def test_run_grpo_main_forwards_distributed_backend(monkeypatch, tmp_path: Path)
     assert captured["backend"] == "gloo"
     assert captured["timeout_minutes"] == 9
     assert captured["train_called"] is True
+
+
+def test_run_grpo_configs_target_a100_outputs() -> None:
+    base = yaml.safe_load(Path("our_work/rl/configs/grpo/a100_4gpu.yaml").read_text(encoding="utf-8"))
+    assert base["model"]["checkpoint_dir"] == "outputs/our_work/pretrain/a100_4gpu"
+    assert base["data"]["dataset_dir"] == "outputs/our_work/data_gen/a100_4gpu"

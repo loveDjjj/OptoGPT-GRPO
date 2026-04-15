@@ -63,7 +63,6 @@ def sample_structure_rollouts(
     config: RolloutConfig,
 ) -> list[RolloutSample]:
     core_model = _unwrap_model(model)
-    expanded_spectra = spectra.repeat_interleave(int(group_size), dim=0)
     expanded_sample_ids: list[str] = []
     expanded_target_indices: list[int] = []
     expanded_candidate_indices: list[int] = []
@@ -72,68 +71,76 @@ def sample_structure_rollouts(
         expanded_target_indices.extend([int(target_index)] * int(group_size))
         expanded_candidate_indices.extend(range(int(group_size)))
 
-    batch_size = int(expanded_spectra.size(0))
-    input_ids = torch.full(
-        (batch_size, 1),
-        tokenizer.bos_token_id,
-        dtype=torch.long,
-        device=expanded_spectra.device,
-    )
-    sequence_logprobs = torch.zeros((batch_size,), dtype=torch.float32, device=expanded_spectra.device)
-    finished = torch.zeros((batch_size,), dtype=torch.bool, device=expanded_spectra.device)
-    token_rows: list[list[int]] = [[] for _ in range(batch_size)]
-
-    for _ in range(int(config.max_new_tokens)):
-        attention_mask = torch.ones(
-            (batch_size, core_model.config.prefix_length + input_ids.size(1)),
-            dtype=torch.long,
-            device=expanded_spectra.device,
-        )
-        outputs = model(
-            spectra=expanded_spectra,
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        next_token_logits = outputs.logits[:, -1, :]
-        if float(config.temperature) != 1.0:
-            next_token_logits = next_token_logits / float(config.temperature)
-        filtered_logits = _apply_sampling_filter(
-            next_token_logits,
-            top_k=int(config.top_k),
-            top_p=float(config.top_p),
-        )
-        log_probs = torch.log_softmax(filtered_logits, dim=-1)
-        if str(config.decode).strip().lower() == "greedy":
-            next_ids = torch.argmax(log_probs, dim=-1)
-        else:
-            probs = torch.softmax(filtered_logits, dim=-1)
-            next_ids = torch.multinomial(probs, num_samples=1).squeeze(-1)
-        chosen_logprobs = log_probs.gather(-1, next_ids.unsqueeze(-1)).squeeze(-1)
-        next_ids = torch.where(finished, torch.full_like(next_ids, tokenizer.eos_token_id), next_ids)
-        chosen_logprobs = torch.where(finished, torch.zeros_like(chosen_logprobs), chosen_logprobs)
-        sequence_logprobs = sequence_logprobs + chosen_logprobs
-        input_ids = torch.cat([input_ids, next_ids.unsqueeze(-1)], dim=1)
-
-        for row_idx, token_id in enumerate(next_ids.tolist()):
-            if not finished[row_idx].item():
-                token_rows[row_idx].append(int(token_id))
-        finished = finished | next_ids.eq(int(tokenizer.eos_token_id))
-        if bool(finished.all().item()):
-            break
+    expanded_spectra = spectra.repeat_interleave(int(group_size), dim=0)
+    total_batch_size = int(expanded_spectra.size(0))
+    chunk_size = max(1, int(config.batch_size))
 
     samples: list[RolloutSample] = []
-    for row_idx, token_ids in enumerate(token_rows):
-        samples.append(
-            RolloutSample(
-                sample_id=expanded_sample_ids[row_idx],
-                target_index=expanded_target_indices[row_idx],
-                candidate_index=expanded_candidate_indices[row_idx],
-                token_ids=list(token_ids),
-                structure_tokens=tokenizer.decode(token_ids),
-                sequence_logprob=float(sequence_logprobs[row_idx].item()),
-                terminated_by_eos=bool(len(token_ids) > 0 and token_ids[-1] == tokenizer.eos_token_id),
-            )
+    for start in range(0, total_batch_size, chunk_size):
+        end = min(start + chunk_size, total_batch_size)
+        chunk_spectra = expanded_spectra[start:end]
+        batch_size = int(chunk_spectra.size(0))
+        input_ids = torch.full(
+            (batch_size, 1),
+            tokenizer.bos_token_id,
+            dtype=torch.long,
+            device=chunk_spectra.device,
         )
+        sequence_logprobs = torch.zeros((batch_size,), dtype=torch.float32, device=chunk_spectra.device)
+        finished = torch.zeros((batch_size,), dtype=torch.bool, device=chunk_spectra.device)
+        token_rows: list[list[int]] = [[] for _ in range(batch_size)]
+
+        for _ in range(int(config.max_new_tokens)):
+            attention_mask = torch.ones(
+                (batch_size, core_model.config.prefix_length + input_ids.size(1)),
+                dtype=torch.long,
+                device=chunk_spectra.device,
+            )
+            outputs = model(
+                spectra=chunk_spectra,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            next_token_logits = outputs.logits[:, -1, :]
+            if float(config.temperature) != 1.0:
+                next_token_logits = next_token_logits / float(config.temperature)
+            filtered_logits = _apply_sampling_filter(
+                next_token_logits,
+                top_k=int(config.top_k),
+                top_p=float(config.top_p),
+            )
+            log_probs = torch.log_softmax(filtered_logits, dim=-1)
+            if str(config.decode).strip().lower() == "greedy":
+                next_ids = torch.argmax(log_probs, dim=-1)
+            else:
+                probs = torch.softmax(filtered_logits, dim=-1)
+                next_ids = torch.multinomial(probs, num_samples=1).squeeze(-1)
+            chosen_logprobs = log_probs.gather(-1, next_ids.unsqueeze(-1)).squeeze(-1)
+            next_ids = torch.where(finished, torch.full_like(next_ids, tokenizer.eos_token_id), next_ids)
+            chosen_logprobs = torch.where(finished, torch.zeros_like(chosen_logprobs), chosen_logprobs)
+            sequence_logprobs = sequence_logprobs + chosen_logprobs
+            input_ids = torch.cat([input_ids, next_ids.unsqueeze(-1)], dim=1)
+
+            for row_idx, token_id in enumerate(next_ids.tolist()):
+                if not finished[row_idx].item():
+                    token_rows[row_idx].append(int(token_id))
+            finished = finished | next_ids.eq(int(tokenizer.eos_token_id))
+            if bool(finished.all().item()):
+                break
+
+        for row_idx, token_ids in enumerate(token_rows):
+            global_index = start + row_idx
+            samples.append(
+                RolloutSample(
+                    sample_id=expanded_sample_ids[global_index],
+                    target_index=expanded_target_indices[global_index],
+                    candidate_index=expanded_candidate_indices[global_index],
+                    token_ids=list(token_ids),
+                    structure_tokens=tokenizer.decode(token_ids),
+                    sequence_logprob=float(sequence_logprobs[row_idx].item()),
+                    terminated_by_eos=bool(len(token_ids) > 0 and token_ids[-1] == tokenizer.eos_token_id),
+                )
+            )
     return samples
 
 
