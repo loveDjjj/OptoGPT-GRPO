@@ -11,7 +11,7 @@ data:
   train_split: train
   eval_split: val
   max_train_samples: null
-  max_eval_samples: 1024
+  max_eval_samples: null
   num_workers: 8
   prefetch_factor: 2
   pin_memory: true
@@ -19,17 +19,17 @@ data:
 
 training:
   output_dir: outputs/our_work/rl/a100_4gpu
-  per_device_batch_size: 512
+  per_device_batch_size: 1024
   gradient_accumulation_steps: 1
-  epochs: 10
+  epochs: 5
   learning_rate: 1.0e-5
   weight_decay: 0.0
   grad_clip_norm: 1.0
   lr_scheduler_type: cosine
   warmup_ratio: 0.01
-  log_steps: 200
-  eval_steps: 5000
-  save_steps: 5000
+  log_steps: 100
+  eval_steps: 1000
+  save_steps: 1000
   clip_epsilon: 0.2
   advantage_mode: zscore
   advantage_eps: 1.0e-6
@@ -42,10 +42,10 @@ rollout:
   top_k: 0
   top_p: 1.0
   max_new_tokens: 12
-  batch_size: 256
+  batch_size: 1024
 
 scoring:
-  batch_size: 1024
+  batch_size: 4096
 
 reward:
   spectrum_metric: rt_rmse
@@ -58,7 +58,7 @@ reward:
     polarization: 0
     tolerance: 0.001
     complex_dtype: complex128
-    batch_size: 1024
+    batch_size: 4096
     device: auto
 
 distributed:
