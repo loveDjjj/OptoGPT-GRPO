@@ -12,7 +12,7 @@ data:
   eval_split: val
   max_train_samples: null
   max_eval_samples: 1024
-  num_workers: 0
+  num_workers: 4
   prefetch_factor: null
   pin_memory: true
   persistent_workers: false
