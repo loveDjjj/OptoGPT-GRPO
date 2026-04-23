@@ -269,7 +269,7 @@ def test_train_keeps_policy_in_eval_mode_for_rollout_and_scoring(tmp_path: Path,
             "ok_mask": torch.tensor([True, True]),
         }
 
-    def fake_logprobs(model, tokenizer, spectra, token_id_groups, *, batch_size):
+    def fake_logprobs(model, tokenizer, spectra, token_id_groups, *, batch_size, rollout_config=None, suppress_non_structural_tokens=True):
         observed_modes.append(("scoring", bool(trainer.raw_model.training), bool(model.training)))
         base = trainer.raw_model.lm_head.weight[0, 0]
         values = torch.stack([base + (0.1 * index) for index in range(len(token_id_groups))])
@@ -286,7 +286,52 @@ def test_train_keeps_policy_in_eval_mode_for_rollout_and_scoring(tmp_path: Path,
     assert trainer.model.training is False
 
 
-def test_train_writes_rl_monitoring_artifacts(tmp_path: Path, monkeypatch) -> None:
+def test_train_does_not_perform_trailing_step_without_pending_gradients(tmp_path: Path, monkeypatch) -> None:
+    base_trainer = SpectralGRPOTrainer(
+        components=_tiny_components(),
+        config=_tiny_config(str(tmp_path / "run")),
+        run_dir=tmp_path / "run",
+        dist_ctx=_dist_ctx(),
+    )
+    base_trainer.global_step = 3
+    base_trainer.resume_epoch = 1
+    base_trainer.resume_batch_index = 0
+    base_trainer._save_checkpoint(step=3)
+
+    config = _tiny_config(str(tmp_path / "run2"))
+    config["training"]["gradient_accumulation_steps"] = 2
+    resumed = SpectralGRPOTrainer(
+        components=_tiny_components(),
+        config=config,
+        run_dir=tmp_path / "run2",
+        dist_ctx=_dist_ctx(),
+        resume_checkpoint=tmp_path / "run" / "checkpoints" / "checkpoint-3",
+    )
+    dataset = SpectralRecordDataset(
+        [
+            {
+                "sample_id": "sample-0",
+                "spectrum_rt": [0.1] * 16,
+                "structure_tokens": ["Ge_10"],
+            }
+        ]
+    )
+    step_calls: list[int] = []
+    original_step = resumed.optimizer.step
+
+    def wrapped_step(*args, **kwargs):
+        step_calls.append(1)
+        return original_step(*args, **kwargs)
+
+    monkeypatch.setattr(resumed.optimizer, "step", wrapped_step)
+
+    resumed.train(train_dataset=dataset, eval_dataset=None)
+
+    assert resumed.global_step == 3
+    assert step_calls == []
+
+
+def test_train_writes_monitoring_artifacts_and_diagnostics(tmp_path: Path, monkeypatch) -> None:
     config = _tiny_config(str(tmp_path / "run"))
     config["training"]["eval_steps"] = 1
     config["monitoring"] = {
@@ -342,7 +387,7 @@ def test_train_writes_rl_monitoring_artifacts(tmp_path: Path, monkeypatch) -> No
             "ok_mask": torch.tensor([True, True]),
         }
 
-    def fake_logprobs(model, tokenizer, spectra, token_id_groups, *, batch_size):
+    def fake_logprobs(model, tokenizer, spectra, token_id_groups, *, batch_size, rollout_config=None, suppress_non_structural_tokens=True):
         base = trainer.raw_model.lm_head.weight[0, 0]
         values = torch.stack([base + (0.1 * index) for index in range(len(token_id_groups))])
         return values, torch.ones((len(token_id_groups), 1), dtype=torch.bool, device=values.device)
@@ -356,11 +401,23 @@ def test_train_writes_rl_monitoring_artifacts(tmp_path: Path, monkeypatch) -> No
 
     metrics_dir = tmp_path / "run" / "metrics"
     plots_dir = tmp_path / "run" / "plots"
-    assert (metrics_dir / "train_metrics.jsonl").exists()
-    assert (metrics_dir / "eval_metrics.jsonl").exists()
+    train_rows = [
+        json.loads(line)
+        for line in (metrics_dir / "train_metrics.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert train_rows
+    assert "mean_ratio" in train_rows[0]
+    assert "clip_fraction" in train_rows[0]
+    assert "mean_approx_kl" in train_rows[0]
+    assert "learning_rate" in train_rows[0]
+    assert "grad_norm" in train_rows[0]
     assert (metrics_dir / "train_metrics.csv").exists()
     assert (metrics_dir / "eval_metrics.csv").exists()
     assert (plots_dir / "train_loss.png").exists()
     assert (plots_dir / "train_mean_reward.png").exists()
     assert (plots_dir / "train_valid_ratio.png").exists()
+    assert (plots_dir / "learning_rate.png").exists()
+    assert (plots_dir / "grad_norm.png").exists()
     assert (plots_dir / "eval_mean_reward.png").exists()
+    assert (plots_dir / "overview.png").exists()

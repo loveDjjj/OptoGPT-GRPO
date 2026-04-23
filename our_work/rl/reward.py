@@ -63,22 +63,29 @@ def compute_rollout_rewards(
             chunk_items = grouped_items[start : start + int(batch_size)]
             chunk_indices = [item[0] for item in chunk_items]
             chunk_groups = [item[1] for item in chunk_items]
-            _, reflections, transmissions, local_ok = simulate_structure_batch(
-                chunk_groups,
-                database_path=database_path,
-                wavelength_range_um=wavelength_range_um,
-                num_points=num_points,
-                incident_angle=incident_angle,
-                polarization=polarization,
-                tolerance=tolerance,
-                complex_dtype=complex_dtype,
-                device=device,
-            )
+            try:
+                _, reflections, transmissions, local_ok = simulate_structure_batch(
+                    chunk_groups,
+                    database_path=database_path,
+                    wavelength_range_um=wavelength_range_um,
+                    num_points=num_points,
+                    incident_angle=incident_angle,
+                    polarization=polarization,
+                    tolerance=tolerance,
+                    complex_dtype=complex_dtype,
+                    device=device,
+                )
+            except Exception:
+                # Rollout reward evaluation should degrade invalid chunks to the configured
+                # penalty instead of aborting the whole GRPO update on a simulator failure.
+                continue
             for local_index, global_index in enumerate(chunk_indices):
                 if not bool(local_ok[local_index]):
                     continue
                 predicted = flatten_rt_spectrum(reflections[local_index], transmissions[local_index]).astype(np.float32)
                 target = target_spectra_np[global_index].reshape(-1)
+                if predicted.shape != target.shape:
+                    continue
                 loss = float(np.sqrt(np.mean(np.square(predicted - target))))
                 spectrum_losses[global_index] = loss
                 rewards[global_index] = -loss

@@ -52,6 +52,18 @@ def _apply_sampling_filter(logits: torch.Tensor, *, top_k: int, top_p: float) ->
     return filtered
 
 
+def _suppress_non_structural_tokens(logits: torch.Tensor, tokenizer) -> torch.Tensor:
+    """Prevent rollout generation from emitting padding/control tokens as structure layers."""
+    blocked_ids = {
+        int(tokenizer.pad_token_id),
+        int(tokenizer.bos_token_id),
+        int(tokenizer.unk_token_id),
+    }
+    filtered = logits.clone()
+    filtered[..., sorted(blocked_ids)] = float("-inf")
+    return filtered
+
+
 @torch.inference_mode()
 def sample_structure_rollouts(
     model,
@@ -109,6 +121,7 @@ def sample_structure_rollouts(
                 top_k=int(config.top_k),
                 top_p=float(config.top_p),
             )
+            filtered_logits = _suppress_non_structural_tokens(filtered_logits, tokenizer)
             log_probs = torch.log_softmax(filtered_logits, dim=-1)
             if str(config.decode).strip().lower() == "greedy":
                 next_ids = torch.argmax(log_probs, dim=-1)
@@ -151,6 +164,8 @@ def batch_sequence_logprobs(
     token_id_groups: Sequence[Sequence[int]],
     *,
     batch_size: int = 256,
+    rollout_config: RolloutConfig | None = None,
+    suppress_non_structural_tokens: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     core_model = _unwrap_model(model)
     if not token_id_groups:
@@ -177,10 +192,17 @@ def batch_sequence_logprobs(
             input_ids[row_idx, : len(row)] = torch.tensor(row, dtype=torch.long, device=chunk_spectra.device)
             if len(row) > 1:
                 token_mask[row_idx, : len(row) - 1] = True
+        input_attention = torch.zeros(
+            (len(chunk_encoded), chunk_max_len),
+            dtype=torch.long,
+            device=chunk_spectra.device,
+        )
+        for row_idx, row in enumerate(chunk_encoded):
+            input_attention[row_idx, : len(row)] = 1
         attention_mask = torch.cat(
             [
                 torch.ones((len(chunk_encoded), core_model.config.prefix_length), dtype=torch.long, device=chunk_spectra.device),
-                input_ids.ne(tokenizer.pad_token_id).long(),
+                input_attention,
             ],
             dim=1,
         )
@@ -189,8 +211,25 @@ def batch_sequence_logprobs(
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
-        log_probs = outputs.logits.log_softmax(dim=-1)
-        gathered = log_probs[:, :-1, :].gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
+        step_logits = outputs.logits
+        # The decoder prepends `prefix_length` spectrum embeddings before BOS/token ids.
+        # Sequence scoring must therefore skip prefix positions and align the first
+        # supervised logprob with the first generated token after BOS.
+        token_start = int(core_model.config.prefix_length)
+        token_stop = token_start + input_ids.size(1) - 1
+        step_logits = step_logits[:, token_start:token_stop, :]
+        if rollout_config is not None and float(rollout_config.temperature) != 1.0:
+            step_logits = step_logits / float(rollout_config.temperature)
+        if rollout_config is not None:
+            step_logits = _apply_sampling_filter(
+                step_logits,
+                top_k=int(rollout_config.top_k),
+                top_p=float(rollout_config.top_p),
+            )
+        if suppress_non_structural_tokens:
+            step_logits = _suppress_non_structural_tokens(step_logits, tokenizer)
+        log_probs = step_logits.log_softmax(dim=-1)
+        gathered = log_probs.gather(-1, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
         gathered = torch.where(token_mask, gathered, torch.zeros_like(gathered))
         all_sequence_logprobs.append(gathered.sum(dim=1))
         all_token_masks.append(token_mask)

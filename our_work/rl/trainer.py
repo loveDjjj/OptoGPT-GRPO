@@ -118,7 +118,8 @@ class SpectralGRPOTrainer:
             self._load_checkpoint_state(self.resume_checkpoint)
 
     def _set_policy_eval(self) -> None:
-        # RL rollout/scoring should reuse a deterministic policy forward path.
+        # Rollout generation and policy rescoring must disable dropout so PPO ratios
+        # compare the same policy under identical forward semantics.
         self.raw_model.eval()
         self.model.eval()
 
@@ -286,6 +287,8 @@ class SpectralGRPOTrainer:
             dynamic_ncols=True,
             desc="our_work grpo",
         )
+        self.optimizer.zero_grad(set_to_none=True)
+        pending_optimizer_step = False
         for epoch in range(self.resume_epoch, self.epochs):
             if train_sampler is not None:
                 train_sampler.set_epoch(epoch)
@@ -323,6 +326,7 @@ class SpectralGRPOTrainer:
                     expanded_spectra,
                     [sample.token_ids for sample in rollout_samples],
                     batch_size=self.score_batch_size,
+                    rollout_config=self.rollout_config,
                 )
                 old_logprobs = torch.tensor(
                     [sample.sequence_logprob for sample in rollout_samples],
@@ -341,13 +345,18 @@ class SpectralGRPOTrainer:
                     loss = -objective_outputs["surrogate"].mean() / self.gradient_accumulation_steps
 
                 loss.backward()
+                pending_optimizer_step = True
                 if (batch_index + 1) % self.gradient_accumulation_steps == 0:
                     grad_norm = float(torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm).item())
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                    pending_optimizer_step = False
                     self.global_step += 1
                     current_lr = float(self.optimizer.param_groups[0]["lr"])
+                    mean_ratio = float(objective_outputs["ratio"].mean().item())
+                    clip_fraction = float(objective_outputs["clip_mask"].float().mean().item())
+                    mean_approx_kl = float(objective_outputs["approx_kl"].mean().item())
                     if batch_index + 1 < len(train_loader):
                         self.resume_epoch = epoch
                         self.resume_batch_index = batch_index + 1
@@ -375,6 +384,9 @@ class SpectralGRPOTrainer:
                                 "valid_ratio": float(reward_outputs["ok_mask"].float().mean().item()),
                                 "learning_rate": current_lr,
                                 "grad_norm": grad_norm,
+                                "mean_ratio": mean_ratio,
+                                "clip_fraction": clip_fraction,
+                                "mean_approx_kl": mean_approx_kl,
                             }
                         )
 
@@ -385,7 +397,7 @@ class SpectralGRPOTrainer:
                         if self.dist_ctx.is_main:
                             self.monitoring.log_eval({"step": self.global_step, **metrics})
 
-        if (len(train_loader) % self.gradient_accumulation_steps) != 0:
+        if pending_optimizer_step:
             torch.nn.utils.clip_grad_norm_(self.raw_model.parameters(), self.grad_clip_norm)
             self.optimizer.step()
             self.scheduler.step()
