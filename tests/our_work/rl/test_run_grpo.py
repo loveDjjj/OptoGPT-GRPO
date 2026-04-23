@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from our_work.rl.scripts.run_grpo import main, resolve_checkpoint_dir
+from our_work.rl.scripts.run_grpo import main, prepare_run_dir, resolve_checkpoint_dir
 
 
 def test_resolve_checkpoint_dir_picks_highest_numeric_checkpoint(tmp_path: Path) -> None:
@@ -15,6 +15,89 @@ def test_resolve_checkpoint_dir_picks_highest_numeric_checkpoint(tmp_path: Path)
     resolved = resolve_checkpoint_dir(run_dir)
 
     assert resolved == run_dir / "checkpoint-10"
+
+
+def test_prepare_run_dir_uses_timestamped_child_by_default(monkeypatch, tmp_path: Path) -> None:
+    class DummyCtx:
+        enabled = False
+        rank = 0
+        world_size = 1
+        local_rank = 0
+        device = "cpu"
+        is_main = True
+
+    base_output_dir = tmp_path / "output"
+    config = {
+        "training": {
+            "output_dir": str(base_output_dir),
+        }
+    }
+    monkeypatch.setattr("our_work.rl.scripts.run_grpo._current_run_timestamp", lambda: "20260423-101112")
+
+    run_dir = prepare_run_dir(config, dist_ctx=DummyCtx(), resume_checkpoint=None)
+
+    assert run_dir == base_output_dir / "20260423-101112"
+    assert run_dir.exists()
+
+
+def test_prepare_run_dir_reuses_existing_run_on_resume(tmp_path: Path) -> None:
+    class DummyCtx:
+        enabled = False
+        rank = 0
+        world_size = 1
+        local_rank = 0
+        device = "cpu"
+        is_main = True
+
+    checkpoint_dir = tmp_path / "output" / "20260423-101112" / "checkpoints" / "checkpoint-50"
+    checkpoint_dir.mkdir(parents=True)
+    config = {
+        "training": {
+            "output_dir": str(tmp_path / "output"),
+        }
+    }
+
+    run_dir = prepare_run_dir(config, dist_ctx=DummyCtx(), resume_checkpoint=checkpoint_dir)
+
+    assert run_dir == checkpoint_dir.parent.parent
+
+
+def test_prepare_run_dir_overwrite_mode_cleans_known_generated_outputs(tmp_path: Path) -> None:
+    class DummyCtx:
+        enabled = False
+        rank = 0
+        world_size = 1
+        local_rank = 0
+        device = "cpu"
+        is_main = True
+
+    run_dir = tmp_path / "output"
+    (run_dir / "metrics").mkdir(parents=True)
+    (run_dir / "plots").mkdir(parents=True)
+    (run_dir / "tensorboard").mkdir(parents=True)
+    (run_dir / "checkpoints" / "checkpoint-10").mkdir(parents=True)
+    (run_dir / "metrics" / "train_metrics.jsonl").write_text("{}", encoding="utf-8")
+    (run_dir / "plots" / "overview.png").write_text("png", encoding="utf-8")
+    (run_dir / "tensorboard" / "events.out.tfevents.fake").write_text("tb", encoding="utf-8")
+    (run_dir / "checkpoints" / "checkpoint-10" / "model.safetensors").write_text("ckpt", encoding="utf-8")
+    (run_dir / "config.snapshot.yaml").write_text("training: {}", encoding="utf-8")
+    (run_dir / "keep.txt").write_text("keep", encoding="utf-8")
+    config = {
+        "training": {
+            "output_dir": str(run_dir),
+            "overwrite_output_dir": True,
+        }
+    }
+
+    resolved = prepare_run_dir(config, dist_ctx=DummyCtx(), resume_checkpoint=None)
+
+    assert resolved == run_dir
+    assert not (run_dir / "metrics").exists()
+    assert not (run_dir / "plots").exists()
+    assert not (run_dir / "tensorboard").exists()
+    assert not (run_dir / "checkpoints").exists()
+    assert not (run_dir / "config.snapshot.yaml").exists()
+    assert (run_dir / "keep.txt").exists()
 
 
 def test_run_grpo_main_forwards_distributed_backend(monkeypatch, tmp_path: Path) -> None:
@@ -66,10 +149,12 @@ def test_run_grpo_main_forwards_distributed_backend(monkeypatch, tmp_path: Path)
         "our_work.rl.scripts.run_grpo.load_rl_split_records",
         lambda *args, **kwargs: [],
     )
+    monkeypatch.setattr("our_work.rl.scripts.run_grpo._current_run_timestamp", lambda: "20260423-101112")
 
     class DummyTrainer:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            captured["run_dir"] = kwargs["run_dir"]
 
         def train(self, **kwargs):
             captured["train_called"] = True
@@ -83,6 +168,7 @@ def test_run_grpo_main_forwards_distributed_backend(monkeypatch, tmp_path: Path)
     assert captured["backend"] == "gloo"
     assert captured["timeout_minutes"] == 9
     assert captured["train_called"] is True
+    assert Path(captured["run_dir"]) == tmp_path / "output" / "20260423-101112"
 
 
 def test_run_grpo_configs_target_a100_outputs() -> None:

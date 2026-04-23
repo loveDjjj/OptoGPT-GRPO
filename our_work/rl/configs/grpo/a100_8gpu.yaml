@@ -18,7 +18,10 @@ data:
   persistent_workers: false
 
 training:
+  # 默认把每次 8 卡训练写到 output_dir 下按日期时间命名的新子目录。
+  # 若确实要覆盖同一目录，显式打开 overwrite_output_dir。
   output_dir: outputs/our_work/rl/a100_8gpu
+  overwrite_output_dir: false
   per_device_batch_size: 32
   gradient_accumulation_steps: 1
   epochs: 3
