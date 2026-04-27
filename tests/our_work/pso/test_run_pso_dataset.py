@@ -5,6 +5,7 @@ import yaml
 from our_work.pso.scripts.run_pso_dataset import (
     build_work_items,
     main,
+    progress_work_items,
     resolve_pso_runtime_config,
 )
 
@@ -41,6 +42,22 @@ def test_build_work_items_can_limit_targets_for_smoke_runs():
     )
 
     assert work_items == [("a", 5), ("a", 6), ("b", 5), ("b", 6)]
+
+
+def test_progress_work_items_uses_tqdm_when_available(monkeypatch):
+    calls = []
+
+    def fake_tqdm(iterable, **kwargs):
+        calls.append(kwargs)
+        yield from iterable
+
+    monkeypatch.setattr("our_work.pso.scripts.run_pso_dataset.tqdm", fake_tqdm)
+
+    items = list(progress_work_items([("target-a", 5), ("target-b", 6)], rank=1, world_size=4))
+
+    assert items == [("target-a", 5), ("target-b", 6)]
+    assert calls[0]["total"] == 2
+    assert calls[0]["desc"] == "pso rank 1/4"
 
 
 def test_run_pso_dataset_main_writes_dataset_with_mocked_search(monkeypatch, tmp_path: Path):

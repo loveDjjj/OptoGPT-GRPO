@@ -4,8 +4,8 @@
 seed: 42
 
 paths:
-  # 材料库目录。默认使用主数据生成链路同一个 database/，保证材料集合一致。
-  database_dir: database
+  # 材料库目录。默认使用 our_work 共享材料库，保证和独立数据生成/训练链路一致。
+  database_dir: our_work/_shared/database
   # 输出目录。补充数据不要直接写进随机数据目录，后续训练时再按比例混合。
   output_dir: outputs/our_work/data_gen/pso_supplement
 

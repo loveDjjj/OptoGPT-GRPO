@@ -131,6 +131,8 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 可选：
 
 - `matplotlib`
+- `tqdm`
+  `our_work/pso` 的补充数据集搜索会用它显示 target/layer 级别的进度条；未安装时会退化为普通输出。
 - `tensorboard`
   `our_work/pretrain` 的实时损失、学习率、梯度范数等可视化默认通过 TensorBoard 查看。
   `our_work/data_gen` 自动分析和评测绘图都会用到。
@@ -158,18 +160,19 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 - `transformers`
 - `safetensors`
 - `Pillow`
+- `tqdm`
 
 推荐安装示例：
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install numpy scipy pandas pyarrow openpyxl pyyaml pillow transformers safetensors
+python -m pip install numpy scipy pandas pyarrow openpyxl pyyaml pillow transformers safetensors tqdm
 ```
 
 安装完成后可执行：
 
 ```bash
-python -c "import torch,yaml,pandas,scipy,numpy,PIL,transformers; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+python -c "import torch,yaml,pandas,scipy,numpy,PIL,transformers,tqdm; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 ```
 
 典型终端输出：
@@ -249,7 +252,7 @@ torch 2.x.x cuda True
   - `reward.tmm.batch_size: 4096`
   - `monitoring.tensorboard/jsonl/csv/save_plots: true`
 - `pso_supplement.yaml`
-  - `paths.database_dir: database`
+  - `paths.database_dir: our_work/_shared/database`
   - `paths.output_dir: outputs/our_work/data_gen/pso_supplement`
   - `data.layer_counts: [5, 6, 7, 8, 9, 10]`
   - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
@@ -549,7 +552,8 @@ python -m our_work.pso.scripts.run_pso_dataset --config our_work/pso/configs/pso
 
 说明：
 
-- PSO 结构参数与主数据生成链路保持一致：`5-10` 层、`10-500 nm`、厚度步长 `10 nm`、材料来自根目录 `database/`。
+- 安装 `tqdm` 后，运行过程中会显示 `pso rank <rank>/<world_size>` 的 target/layer 级别进度条。
+- PSO 结构参数与主数据生成链路保持一致：`5-10` 层、`10-500 nm`、厚度步长 `10 nm`、材料来自 `our_work/_shared/database/`。
 - 输出光谱仍然是 `[R..., T...]`，共 `2048` 维；目标吸收谱只用于 PSO 搜索时计算 MSE。
 - 只有 `absorption MSE < search.acceptance_mse_threshold` 的结构会被写入数据集。
 - 写出前会按完整 `structure_tokens` 做全局去重。

@@ -13,6 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - tqdm is optional for headless server runs
+    tqdm = None
+
 from our_work._shared.io.config import load_yaml_config, resolve_repo_path
 from our_work.data_gen.pipeline.material_registry import build_material_registry
 from our_work.data_gen.pipeline.token_vocab import build_token_vocab
@@ -86,6 +91,19 @@ def build_work_items(
     return [item for index, item in enumerate(all_items) if index % int(world_size) == int(rank)]
 
 
+def progress_work_items(work_items: list[tuple[str, int]], *, rank: int, world_size: int):
+    if tqdm is None:
+        yield from work_items
+        return
+    yield from tqdm(
+        work_items,
+        total=len(work_items),
+        desc=f"pso rank {rank}/{world_size}",
+        unit="target-layer",
+        dynamic_ncols=True,
+    )
+
+
 def _resolve_rank_context(config: dict[str, Any]) -> tuple[int, int]:
     distributed_cfg = config.get("distributed", {})
     if not bool(distributed_cfg.get("enabled", False)):
@@ -155,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
     all_accepted = []
     global_seen: set[tuple[str, ...]] = set()
     search_summaries: list[dict[str, Any]] = []
-    for item_index, (target_id, layer_count) in enumerate(work_items):
+    for item_index, (target_id, layer_count) in enumerate(progress_work_items(work_items, rank=rank, world_size=world_size)):
         target = target_by_id[target_id]
         result = run_pso_search(
             target=target,
