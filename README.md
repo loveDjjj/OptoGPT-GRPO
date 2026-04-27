@@ -191,6 +191,7 @@ torch 2.x.x cuda True
 - 强化学习（基础）：`our_work/rl/configs/grpo/base_grpo.yaml`
 - 强化学习（4 卡）：`our_work/rl/configs/grpo/a100_4gpu.yaml`
 - 强化学习（8 卡）：`our_work/rl/configs/grpo/a100_8gpu.yaml`
+- PSO 补充数据集：`our_work/pso/configs/pso_supplement.yaml`
 
 当前默认值（单卡 A100 80G + 16 CPU）：
 
@@ -247,6 +248,25 @@ torch 2.x.x cuda True
   - `scoring.batch_size: 1024`
   - `reward.tmm.batch_size: 4096`
   - `monitoring.tensorboard/jsonl/csv/save_plots: true`
+- `pso_supplement.yaml`
+  - `paths.database_dir: database`
+  - `paths.output_dir: outputs/our_work/data_gen/pso_supplement`
+  - `data.layer_counts: [5, 6, 7, 8, 9, 10]`
+  - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
+  - `targets.include_fixed: true`
+  - `targets.include_lorentzian: true`
+  - `targets.lorentzian.center_min_um: 2.1`
+  - `targets.lorentzian.center_max_um: 14.9`
+  - `targets.lorentzian.center_step_um: 0.1`
+  - `targets.lorentzian.fwhm_um: 0.02`
+  - `search.population_size: 8192`
+  - `search.iterations: 50`
+  - `search.batch_size: 2048`
+  - `search.max_accepted_per_target_layer: 1000`
+  - `search.acceptance_mse_threshold: 0.01`
+  - `tmm.wavelength_range_um: [2.0, 15.0]`
+  - `tmm.num_points: 1024`
+  - `tmm.batch_size: 2048`
 
 关键约束：
 
@@ -500,6 +520,98 @@ python our_work/data_gen/scripts/run_analyze_dataset.py \
 - `outputs/our_work/data_gen/v1/analysis/<scope>/structure_analysis.json`
 - `outputs/our_work/data_gen/v1/analysis/<scope>/spectrum_analysis.json`
 - 对应 scope 下的结构分布和谱形分析 PNG
+
+#### Step 4.2: 生成 PSO 补充数据集
+
+PSO 补充数据集用于围绕指定目标吸收谱搜索相近结构，作为随机生成数据集之外的定向补充数据。默认目标包括：
+
+- `broad_3_13`：`3-13 um` 吸收为 1，其余为 0。
+- `band_5_8`：`5-8 um` 吸收为 1，其余为 0。
+- `dual_3_5_8_13`：`3-5 um` 和 `8-13 um` 吸收为 1，其余为 0。
+- `notch_3_5`：`3-5 um` 吸收为 0，其余为 1。
+- 洛伦兹窄带目标：`2.1-14.9 um`，中心步长 `0.1 um`，半高宽 `0.02 um`。
+
+单进程运行：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.pso.scripts.run_pso_dataset --config our_work/pso/configs/pso_supplement.yaml
+```
+
+该步骤完成后应出现：
+
+- `outputs/our_work/data_gen/pso_supplement/shards/shard-00000.parquet`
+- `outputs/our_work/data_gen/pso_supplement/splits/split_manifest.json`
+- `outputs/our_work/data_gen/pso_supplement/vocab/vocab.json`
+- `outputs/our_work/data_gen/pso_supplement/targets/target_manifest.json`
+- `outputs/our_work/data_gen/pso_supplement/stats/summary.json`
+- `outputs/our_work/data_gen/pso_supplement/stats/search_summary.json`
+
+说明：
+
+- PSO 结构参数与主数据生成链路保持一致：`5-10` 层、`10-500 nm`、厚度步长 `10 nm`、材料来自根目录 `database/`。
+- 输出光谱仍然是 `[R..., T...]`，共 `2048` 维；目标吸收谱只用于 PSO 搜索时计算 MSE。
+- 只有 `absorption MSE < search.acceptance_mse_threshold` 的结构会被写入数据集。
+- 写出前会按完整 `structure_tokens` 做全局去重。
+- 该补充数据默认写入独立目录，不会自动混入随机数据集；后续训练混合比例需要在训练数据加载侧单独定义。
+
+多进程拆分运行：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=4 -m our_work.pso.scripts.run_pso_dataset --config our_work/pso/configs/pso_supplement.yaml
+```
+
+使用多进程前，需要先把 `our_work/pso/configs/pso_supplement.yaml` 里的 `distributed.enabled` 改成 `true`。多进程会按 `target/layer` work items 拆分任务，并分别写到：
+
+- `outputs/our_work/data_gen/pso_supplement/rank00`
+- `outputs/our_work/data_gen/pso_supplement/rank01`
+- `outputs/our_work/data_gen/pso_supplement/rankXX`
+
+当前版本还没有内置跨 rank 合并与二次去重脚本；正式混入训练前，建议先对各 `rankXX` 目录做合并和全局去重。
+
+#### Step 4.3: 分析 PSO 补充数据集
+
+PSO 数据集生成完成后，可以单独运行分析和可视化：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.pso.analysis.run_analyze_pso \
+  --dataset-dir outputs/our_work/data_gen/pso_supplement \
+  --output-dir outputs/our_work/pso_analysis/pso_supplement \
+  --split all \
+  --wavelength-min-um 2.0 \
+  --wavelength-max-um 15.0 \
+  --top-k 8 \
+  --max-spectrum-groups 100
+```
+
+如果要给所有 `target/layer` 组合都画光谱图，把 `--max-spectrum-groups` 改成 `-1`：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.pso.analysis.run_analyze_pso \
+  --dataset-dir outputs/our_work/data_gen/pso_supplement \
+  --output-dir outputs/our_work/pso_analysis/pso_supplement_full \
+  --split all \
+  --max-spectrum-groups -1
+```
+
+该步骤完成后应出现：
+
+- `outputs/our_work/pso_analysis/pso_supplement/summary.json`
+- `outputs/our_work/pso_analysis/pso_supplement/analysis_manifest.json`
+- `outputs/our_work/pso_analysis/pso_supplement/tables/target_layer_stats.csv`
+- `outputs/our_work/pso_analysis/pso_supplement/tables/search_efficiency.csv`
+- `outputs/our_work/pso_analysis/pso_supplement/tables/material_stats.csv`
+- `outputs/our_work/pso_analysis/pso_supplement/tables/diversity_stats.csv`
+- `outputs/our_work/pso_analysis/pso_supplement/tables/best_samples.csv`
+- `outputs/our_work/pso_analysis/pso_supplement/figures/mse_by_target.png`
+- `outputs/our_work/pso_analysis/pso_supplement/figures/accepted_count_heatmap.png`
+- `outputs/our_work/pso_analysis/pso_supplement/figures/structures/material_frequency.png`
+- `outputs/our_work/pso_analysis/pso_supplement/figures/spectra/<target_id>/layer_<layer_count>_topk.png`
+- `outputs/our_work/pso_analysis/pso_supplement/figures/spectra/<target_id>/layer_<layer_count>_mean_band.png`
+- `outputs/our_work/pso_analysis/pso_supplement/figures/lorentzian/center_vs_best_mse.png`
 
 #### Step 5: 启动预训练
 
