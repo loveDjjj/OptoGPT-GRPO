@@ -1,0 +1,2 @@
+"""PSO command-line entrypoints."""
+
