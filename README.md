@@ -767,6 +767,23 @@ torchrun --nproc_per_node=3 -m our_work.ga.scripts.run_ga_dataset --config our_w
 - `outputs/our_work/data_gen/ga_seeded_absorbers/rank01`
 - `outputs/our_work/data_gen/ga_seeded_absorbers/rank02`
 
+如果只想从某个 parquet shard 里随机抽样画图，例如从 `shard-00000.parquet` 随机抽 10 条 `3-13 um` 目标光谱：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.ga.scripts.plot_random_parquet_spectra \
+  --shard-path outputs/our_work/data_gen/ga_seeded_absorbers/shards/shard-00000.parquet \
+  --output-path outputs/our_work/data_gen/ga_seeded_absorbers/figures/random_10_broad_3_13_absorption.png \
+  --sample-count 10 \
+  --seed 42 \
+  --target-id broad_3_13_high
+```
+
+该命令会同时写出：
+
+- `outputs/our_work/data_gen/ga_seeded_absorbers/figures/random_10_broad_3_13_absorption.png`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/figures/random_10_broad_3_13_absorption.selected.json`
+
 #### Step 5: 启动预训练
 
 ```bash
