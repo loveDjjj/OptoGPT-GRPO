@@ -195,6 +195,7 @@ torch 2.x.x cuda True
 - 强化学习（4 卡）：`our_work/rl/configs/grpo/a100_4gpu.yaml`
 - 强化学习（8 卡）：`our_work/rl/configs/grpo/a100_8gpu.yaml`
 - PSO 补充数据集：`our_work/pso/configs/pso_supplement.yaml`
+- GA 优秀解族补充数据集：`our_work/ga/configs/ga_seeded_absorbers.yaml`
 
 当前默认值（单卡 A100 80G + 16 CPU）：
 
@@ -270,6 +271,21 @@ torch 2.x.x cuda True
   - `tmm.wavelength_range_um: [2.0, 15.0]`
   - `tmm.num_points: 1024`
   - `tmm.batch_size: 2048`
+- `ga_seeded_absorbers.yaml`
+  - `paths.database_dir: our_work/_shared/database`
+  - `paths.output_dir: outputs/our_work/data_gen/ga_seeded_absorbers`
+  - `data.target_sample_count: 100`
+  - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
+  - `data.include_seed_thickness_values: true`
+  - `targets.include_ids: null`
+  - `search.population_size: 4096`
+  - `search.generations: 80`
+  - `search.batch_size: 1024`
+  - `search.acceptance_mse_threshold: 0.005`
+  - `search.max_restarts: 20`
+  - `tmm.wavelength_range_um: [2.0, 15.0]`
+  - `tmm.num_points: 1024`
+  - `visualization.enabled: true`
 
 关键约束：
 
@@ -703,6 +719,53 @@ python -m our_work.pso.analysis.run_analyze_pso \
 - `outputs/our_work/pso_analysis/pso_supplement/figures/spectra/<target_id>/layer_<layer_count>_topk.png`
 - `outputs/our_work/pso_analysis/pso_supplement/figures/spectra/<target_id>/layer_<layer_count>_mean_band.png`
 - `outputs/our_work/pso_analysis/pso_supplement/figures/lorentzian/center_vs_best_mse.png`
+
+#### Step 4.5: 生成 GA 优秀解族补充数据集
+
+GA 补充数据集用于从已知优秀结构出发做局部变异和交叉，搜索满足阈值的相近优秀解族。当前只包含三类目标：
+
+- `broad_3_13_high`：`3-13 um` 高吸收，其他波段不参与 loss。种子结构：`YbF3(870) / ZnS(480) / Si(280) / Bi(20) / Ge(130) / Bi(820) / Au(100)`。
+- `mid_5_8_high`：`3-5 um` 低吸收、`5-8 um` 高吸收、`8-13 um` 低吸收，其他波段不参与 loss。种子结构：`Si(250) / SiO2(120) / Ge(500) / MgF2(850) / Ge(110) / MgF2(500) / Bi(130) / Au(100)`。
+- `dual_3_5_8_13_high`：`3-5 um` 高吸收、`5-8 um` 低吸收、`8-13 um` 高吸收，其他波段不参与 loss。种子结构：`SiO2(150) / MgF2(500) / Si(500) / ZnS(450) / Ge(490) / MgF2(280) / Si(320) / Bi(250) / Au(100)`。
+
+单进程运行：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.ga.scripts.run_ga_dataset --config our_work/ga/configs/ga_seeded_absorbers.yaml
+```
+
+该步骤完成后应出现：
+
+- `outputs/our_work/data_gen/ga_seeded_absorbers/shards/shard-00000.parquet`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/splits/split_manifest.json`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/vocab/vocab.json`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/targets/target_manifest.json`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/stats/summary.json`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/stats/search_summary.json`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/figures/*_accepted_absorption_topk.png`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/figures/*_mse_hist.png`
+
+说明：
+
+- GA 固定使用每个种子结构的层数，在同层数内做材料变异、厚度变异、精英保留、锦标赛选择和 layer-wise crossover。
+- 接受条件是 masked absorption MSE `< 0.005`，每个目标默认收集 `100` 条全局去重结构。
+- 默认材料集合与 PSO 一致，使用 `database_dir` 下的全部材料；如果只想围绕已知优秀解的材料局部搜索，可在 YAML 里显式写 `materials`。
+- 已知优秀解包含 `820/850/870 nm` 层；默认配置会把这些 seed 厚度额外加入可选厚度集合。若要严格限制到 `10-500 nm`，将 `data.include_seed_thickness_values` 改为 `false`，但种子会被近邻厚度裁剪，搜索质量可能下降。
+- 输出光谱仍然是 `[R..., T...]`，共 `2048` 维；目标吸收谱只用于 GA 搜索时计算 masked MSE。
+
+多进程拆分运行：
+
+```bash
+cd /srv/OptoGPT-GRPO
+torchrun --nproc_per_node=3 -m our_work.ga.scripts.run_ga_dataset --config our_work/ga/configs/ga_seeded_absorbers.yaml
+```
+
+使用多进程前，需要先把 `our_work/ga/configs/ga_seeded_absorbers.yaml` 里的 `distributed.enabled` 改成 `true`。三个 target 会按 rank 拆分，并分别写到：
+
+- `outputs/our_work/data_gen/ga_seeded_absorbers/rank00`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/rank01`
+- `outputs/our_work/data_gen/ga_seeded_absorbers/rank02`
 
 #### Step 5: 启动预训练
 

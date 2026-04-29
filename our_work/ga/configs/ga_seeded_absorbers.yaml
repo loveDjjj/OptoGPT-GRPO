@@ -1,0 +1,94 @@
+# GA 优秀解族补充数据集生成配置
+# 目标：从 3 个已知优秀结构出发，用遗传算法做变异/交叉，搜索 MSE < 0.005 的相近优秀解族。
+
+seed: 42
+
+paths:
+  # 材料库目录。默认使用 our_work 共享材料库，保证材料名称与主链路一致。
+  database_dir: our_work/_shared/database
+  # 输出目录。GA 补充数据单独保存，后续训练时再决定混合比例。
+  output_dir: outputs/our_work/data_gen/ga_seeded_absorbers
+
+# 默认不写 materials，表示和 PSO 一样使用 database_dir 下的全部材料。
+# 如果只想围绕已知优秀解的材料局部搜索，可显式写：
+# materials: [Au, Bi, Ge, MgF2, Si, SiO2, YbF3, ZnS]
+
+data:
+  # 每个目标保留的合格结构数量。当前需求为每种目标 100 个。
+  target_sample_count: 100
+  # 主随机数据集默认为 10-500 nm / 10 nm 步长。
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
+  # 注意：用户给定的优秀解包含 820/850/870 nm 层。
+  # 为了从原始优秀解出发搜索，默认把这些 seed 厚度额外加入可选厚度集合。
+  # 如果后续严格要求所有 token 都在 10-500 nm 内，可设为 false，但种子会被近邻厚度裁剪，质量可能下降。
+  include_seed_thickness_values: true
+  # 输出 split。补充数据通常全部用于训练，默认全写 train。
+  train_ratio: 1.0
+  val_ratio: 0.0
+
+targets:
+  # 默认只跑三类 seeded 目标：
+  # broad_3_13_high：3-13 um 高吸收，其他波段不进 loss。
+  # mid_5_8_high：3-5 低吸收、5-8 高吸收、8-13 低吸收，其他波段不进 loss。
+  # dual_3_5_8_13_high：3-5 高吸收、5-8 低吸收、8-13 高吸收，其他波段不进 loss。
+  include_ids: null
+
+search:
+  # 种群规模。越大越能并行吃满 TMM/GPU，但显存和单代耗时也更高。
+  population_size: 4096
+  # 每个 restart 的 GA 代数。
+  generations: 80
+  # 每次送入 TMM 的结构数。主要控制 GPU 并行度和显存。
+  batch_size: 1024
+  # 接受阈值：只保留 masked absorption MSE < 0.005 的结构。
+  acceptance_mse_threshold: 0.005
+  # 精英保留比例。
+  elite_fraction: 0.15
+  # 锦标赛选择规模。
+  tournament_size: 4
+  # 交叉概率；固定层数内做 layer-wise uniform crossover。
+  crossover_rate: 0.8
+  # 材料变异概率。默认较低，主要围绕优秀解局部搜索。
+  material_mutation_rate: 0.05
+  # 厚度变异概率。默认较高，因为优秀解族通常厚度局部扰动更多。
+  thickness_mutation_rate: 0.35
+  # 厚度变异最大步数，单位是 thickness_values_nm 的索引步长，不是 nm。
+  thickness_mutation_steps: 6
+  # 每代随机注入比例，避免种群过早收敛。
+  random_injection_rate: 0.08
+  # 连续多少代没有新合格且未重复结构后，切换新随机种子。
+  max_stagnant_generations: 12
+  # 每个目标最多重启多少次。
+  max_restarts: 20
+  # auto 会优先让 TMM 使用 CUDA；多进程时建议用 torchrun 并让脚本按 LOCAL_RANK 分配 cuda:<rank>。
+  device: auto
+
+tmm:
+  # 与主数据集保持一致：2-15 um，1024 点，输出 [R..., T...] 共 2048 维。
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex128
+  # TMM 内部 chunk。通常不大于 search.batch_size；显存不足时先降这个值。
+  batch_size: 1024
+  device: auto
+
+shards:
+  # 每个 parquet shard 的最大记录数。
+  records_per_shard: 50000
+
+visualization:
+  # 生成每个目标的 accepted absorption top-k 叠加图和 MSE 分布图。
+  enabled: true
+  top_k: 20
+
+distributed:
+  # 这里不是 DDP 训练，只是把 3 个 target 按 rank 拆分给多个独立进程。
+  # 开启后可用 torchrun --nproc_per_node=3，让每张 GPU 负责一个目标。
+  # 多 rank 会分别写入 output_dir/rankXX，避免覆盖同名 shard。
+  enabled: false

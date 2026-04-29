@@ -1,33 +1,40 @@
 # 本次修改摘要
 
 ## 需求
-- 给 `our_work.data_gen.scripts.convert_legacy_npy_dataset` 增加可选多进程转换能力，加速旧版 `.npy` 数据集转 parquet。
-- 保持默认单进程行为不变，避免无意放大 `Structure_*.npy` object array 的主机内存占用。
+- 新增 `our_work/ga` 遗传算法补充数据生成模块。
+- 从 3 个已知优秀结构出发，针对 3 类 2-15 um 吸收目标搜索 masked absorption MSE `< 0.005` 的优秀解族，每类默认 100 个。
+- 输出格式、材料库、TMM 批量计算、分布式拆分方式和 PSO 补充数据集保持一致，并自动生成光谱可视化。
 
 ## 实际修改
-- `our_work/data_gen/scripts/convert_legacy_npy_dataset.py`
-  - 新增 `num_workers` 参数和 CLI 选项 `--num-workers`。
-  - 当 `num_workers > 1` 时，先扫描结构 token 构建稳定 vocab，再按 shard 使用 `ProcessPoolExecutor` 并行写 parquet。
-  - 并行模式下每个 worker 只负责一个 shard chunk，输出后按 shard index 重新排序生成 manifest。
-  - `stats/summary.json` 新增 `num_workers` 和并行内存说明。
-- `tests/our_work/data_gen/test_convert_legacy_npy_dataset.py`
-  - 新增并行转换回归测试，覆盖 shard 写出、summary、manifest、vocab 和 token id 稳定性。
+- `our_work/ga/targets.py`
+  - 新增三类 seeded GA 目标及对应优秀初始结构。
+  - 支持只在指定波段计算 loss，未提到波段不参与损失。
+- `our_work/ga/search.py`
+  - 新增固定层数 seeded GA：精英保留、锦标赛选择、layer-wise crossover、材料/厚度变异、随机注入、停滞重启和结构去重。
+  - 使用现有 `simulate_structure_batch(...)` 做 TMM 批量评估，计算 masked absorption MSE。
+- `our_work/ga/dataset_writer.py`
+  - 写出兼容 data_gen schema 的 parquet、split manifest、vocab、target manifest 和 summary。
+- `our_work/ga/visualization.py`
+  - 为每个目标输出 accepted absorption top-k 叠加图和 MSE 分布图。
+- `our_work/ga/scripts/run_ga_dataset.py`
+  - 新增 GA 数据集生成入口，支持 YAML 配置、target 按 rank 拆分、多 rank 输出到 `rankXX`。
+- `our_work/ga/configs/ga_seeded_absorbers.yaml`
+  - 新增中文注释配置，默认每目标 100 条、阈值 `0.005`、2-15 um 1024 点。
+  - 默认把优秀解中的 `820/850/870 nm` seed 厚度加入可选厚度集合，避免种子被裁剪。
+  - 默认材料集合与 PSO 一致，使用 `database_dir` 下的全部材料；需要局部搜索时可显式配置 `materials`。
+- `tests/our_work/ga/`
+  - 新增目标、搜索、writer 和入口测试。
 - `README.md`
-  - 旧 `.npy` 转换命令补充 `--num-workers`。
-  - 补充多进程模式的 vocab 预扫描和 object array 内存占用说明。
-- `docs/notes.md`
-  - 覆盖为本次修改摘要。
-- `docs/logs/2026-04.md`
-  - 追加本次修改记录。
+  - 新增 GA 配置说明和运行命令。
 
 ## 验证
-- `D:\anaconda\envs\oneday\python.exe -m compileall our_work\data_gen\scripts\convert_legacy_npy_dataset.py tests\our_work\data_gen\test_convert_legacy_npy_dataset.py`
+- `D:\anaconda\envs\oneday\python.exe -m pytest tests\our_work\ga -q -p no:cacheprovider`
+  - 结果：通过，`9 passed`
+- `D:\anaconda\envs\oneday\python.exe -m compileall our_work\ga tests\our_work\ga`
   - 结果：通过
-- `D:\anaconda\envs\oneday\python.exe -m pytest tests\our_work\data_gen\test_convert_legacy_npy_dataset.py -q -p no:cacheprovider`
-  - 结果：通过，`3 passed`
-- `git diff --check -- README.md docs\notes.md docs\logs\2026-04.md our_work\data_gen\scripts\convert_legacy_npy_dataset.py tests\our_work\data_gen\test_convert_legacy_npy_dataset.py`
+- `git diff --check -- README.md docs\notes.md docs\logs\2026-04.md our_work\ga tests\our_work\ga`
   - 结果：通过
 
 ## Git
 - branch: `main`
-- commit: pending (`feat: parallelize legacy npy dataset conversion`)
+- commit: pending (`feat: add seeded genetic algorithm supplement generator`)
