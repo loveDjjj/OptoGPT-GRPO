@@ -129,10 +129,48 @@ def test_convert_legacy_npy_dataset_main_supports_max_samples() -> None:
                 "1",
                 "--max-test-samples",
                 "1",
+                "--num-workers",
+                "1",
             ]
         )
 
         summary = json.loads((output_dir / "stats" / "summary.json").read_text(encoding="utf-8"))
+        assert summary["num_workers"] == 1
         assert summary["split_counts"] == {"train": 1, "val": 0, "test": 1}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_convert_legacy_npy_dataset_parallel_workers_write_shards() -> None:
+    tmp_dir = _fresh_tmp_dir("legacy-convert-parallel")
+    try:
+        paths = _write_legacy_arrays(tmp_dir)
+        output_dir = tmp_dir / "converted-parallel"
+
+        summary = convert_legacy_npy_dataset(
+            spectrum_train=paths["spectrum_train"],
+            structure_train=paths["structure_train"],
+            spectrum_test=paths["spectrum_test"],
+            structure_test=paths["structure_test"],
+            output_dir=output_dir,
+            records_per_shard=1,
+            num_workers=2,
+        )
+
+        assert summary["num_workers"] == 2
+        assert summary["split_counts"] == {"train": 3, "val": 0, "test": 2}
+        assert summary["split_manifest"]["train"] == [
+            "train-shard-00000.parquet",
+            "train-shard-00001.parquet",
+            "train-shard-00002.parquet",
+        ]
+
+        frame = pd.read_parquet(output_dir / "shards" / "train-shard-00001.parquet")
+        assert frame.iloc[0]["sample_id"] == "train-000000001"
+        assert frame.iloc[0]["structure_tokens"].tolist() == ["Si_30", "Ge_10"]
+        assert frame.iloc[0]["token_ids"].tolist() == [6, 4]
+
+        vocab = json.loads((output_dir / "vocab" / "vocab.json").read_text(encoding="utf-8"))
+        assert vocab["tokens"] == ["[PAD]", "[BOS]", "[EOS]", "[UNK]", "Ge_10", "SiO2_20", "Si_30", "ZnS_40"]
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

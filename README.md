@@ -545,7 +545,8 @@ python -m our_work.data_gen.scripts.convert_legacy_npy_dataset \
   --spectrum-test dataset/Spectrum_test.npy \
   --structure-test dataset/Structure_test.npy \
   --output-dir outputs/legacy_npy_parquet \
-  --records-per-shard 50000
+  --records-per-shard 50000 \
+  --num-workers 8
 ```
 
 该步骤完成后应出现：
@@ -562,6 +563,8 @@ python -m our_work.data_gen.scripts.convert_legacy_npy_dataset \
 - `Structure_*.npy` 会从 `Material_ThicknessNm` token 拆出 `materials` 和 `thickness_nm`。
 - 旧数据集的光谱维度通常是 `142 = R(71) + T(71)`，对应旧配置 `0.4-1.1 um`、`71` 个波长点。
 - `Structure_train.npy` 是 object array，NumPy 不能内存映射；转换脚本会一次只加载一个 split，但转换 train 时仍需要服务器有足够内存容纳该 object 数组。
+- `--num-workers` 默认为 `1`。当设置为大于 `1` 时，脚本会按 shard 多进程并行写 parquet；并行前会先扫描结构 token 构建稳定 vocab。
+- 多进程模式下，每个 worker 进程都会加载当前 split 的 `Structure_*.npy` object array，因此主机内存占用会近似随 `num_workers` 放大；如果内存紧张，先从 `4` 或更小值开始。
 
 如果只想先小规模验证转换流程，可以加采样上限：
 
@@ -575,7 +578,8 @@ python -m our_work.data_gen.scripts.convert_legacy_npy_dataset \
   --output-dir outputs/legacy_npy_parquet_smoke \
   --records-per-shard 50000 \
   --max-train-samples 10000 \
-  --max-test-samples 10000
+  --max-test-samples 10000 \
+  --num-workers 2
 ```
 
 转换后运行分析：
