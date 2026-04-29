@@ -524,7 +524,90 @@ python our_work/data_gen/scripts/run_analyze_dataset.py \
 - `outputs/our_work/data_gen/v1/analysis/<scope>/spectrum_analysis.json`
 - 对应 scope 下的结构分布和谱形分析 PNG
 
-#### Step 4.2: 生成 PSO 补充数据集
+#### Step 4.2: 转换并分析旧 `.npy` 数据集
+
+旧数据集文件：
+
+- `dataset/Spectrum_train.npy`
+- `dataset/Spectrum_test.npy`
+- `dataset/Structure_train.npy`
+- `dataset/Structure_test.npy`
+
+不能直接传给 `our_work/data_gen/scripts/run_analyze_dataset.py`，需要先转换成 `our_work/data_gen` 的 parquet schema。
+
+转换命令：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.data_gen.scripts.convert_legacy_npy_dataset \
+  --spectrum-train dataset/Spectrum_train.npy \
+  --structure-train dataset/Structure_train.npy \
+  --spectrum-test dataset/Spectrum_test.npy \
+  --structure-test dataset/Structure_test.npy \
+  --output-dir outputs/legacy_npy_parquet \
+  --records-per-shard 50000
+```
+
+该步骤完成后应出现：
+
+- `outputs/legacy_npy_parquet/shards/train-shard-00000.parquet`
+- `outputs/legacy_npy_parquet/shards/test-shard-00000.parquet`
+- `outputs/legacy_npy_parquet/splits/split_manifest.json`
+- `outputs/legacy_npy_parquet/vocab/vocab.json`
+- `outputs/legacy_npy_parquet/stats/summary.json`
+
+说明：
+
+- `Spectrum_*.npy` 会按行复制到 `spectrum_rt` 字段。
+- `Structure_*.npy` 会从 `Material_ThicknessNm` token 拆出 `materials` 和 `thickness_nm`。
+- 旧数据集的光谱维度通常是 `142 = R(71) + T(71)`，对应旧配置 `0.4-1.1 um`、`71` 个波长点。
+- `Structure_train.npy` 是 object array，NumPy 不能内存映射；转换脚本会一次只加载一个 split，但转换 train 时仍需要服务器有足够内存容纳该 object 数组。
+
+如果只想先小规模验证转换流程，可以加采样上限：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.data_gen.scripts.convert_legacy_npy_dataset \
+  --spectrum-train dataset/Spectrum_train.npy \
+  --structure-train dataset/Structure_train.npy \
+  --spectrum-test dataset/Spectrum_test.npy \
+  --structure-test dataset/Structure_test.npy \
+  --output-dir outputs/legacy_npy_parquet_smoke \
+  --records-per-shard 50000 \
+  --max-train-samples 10000 \
+  --max-test-samples 10000
+```
+
+转换后运行分析：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python our_work/data_gen/scripts/run_analyze_dataset.py \
+  --dataset-dir outputs/legacy_npy_parquet \
+  --scope train \
+  --scope test \
+  --output-dir outputs/legacy_npy_analysis \
+  --wavelength-min 0.4 \
+  --wavelength-max 1.1 \
+  --engine rapids \
+  --device auto
+```
+
+如果服务器没有 RAPIDS / cudf / cuml，只分析结构分布：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python our_work/data_gen/scripts/run_analyze_dataset.py \
+  --dataset-dir outputs/legacy_npy_parquet \
+  --scope train \
+  --scope test \
+  --output-dir outputs/legacy_npy_analysis_structure_only \
+  --wavelength-min 0.4 \
+  --wavelength-max 1.1 \
+  --disable-spectrum-analysis
+```
+
+#### Step 4.3: 生成 PSO 补充数据集
 
 PSO 补充数据集用于围绕指定目标吸收谱搜索相近结构，作为随机生成数据集之外的定向补充数据。默认目标包括：
 
@@ -574,7 +657,7 @@ torchrun --nproc_per_node=4 -m our_work.pso.scripts.run_pso_dataset --config our
 
 当前版本还没有内置跨 rank 合并与二次去重脚本；正式混入训练前，建议先对各 `rankXX` 目录做合并和全局去重。
 
-#### Step 4.3: 分析 PSO 补充数据集
+#### Step 4.4: 分析 PSO 补充数据集
 
 PSO 数据集生成完成后，可以单独运行分析和可视化：
 

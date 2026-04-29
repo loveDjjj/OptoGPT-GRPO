@@ -1,35 +1,34 @@
 # 本次修改摘要
 
 ## 需求
-- 给 PSO 补充数据集生成入口增加可视化进度条。
-- 将 PSO 默认材料库路径改为 `our_work/_shared/database`。
+- 让旧版 `dataset/Spectrum_*.npy` 和 `dataset/Structure_*.npy` 能复用 `our_work/data_gen/analysis` 的分析工具。
+- 提供从旧 `.npy` 到新 parquet schema 的转换入口和 README 命令。
 
 ## 实际修改
-- `our_work/pso/scripts/run_pso_dataset.py`
-  - 新增可选 `tqdm` 进度条封装 `progress_work_items(...)`。
-  - 主循环按 target/layer work item 显示进度，描述中包含当前 rank 和 world size。
-  - 如果运行环境没有安装 `tqdm`，会自动退化为普通迭代，不影响生成流程。
-- `our_work/pso/configs/pso_supplement.yaml`
-  - 将 `paths.database_dir` 从 `database` 改为 `our_work/_shared/database`。
+- `our_work/data_gen/scripts/convert_legacy_npy_dataset.py`
+  - 新增旧 `.npy` 转换 CLI。
+  - 将 `Spectrum_*.npy` 行复制为 `spectrum_rt`。
+  - 将 `Structure_*.npy` 的 `Material_ThicknessNm` token 拆成 `materials` 和 `thickness_nm`。
+  - 输出 `shards/*.parquet`、`splits/split_manifest.json`、`vocab/vocab.json` 和 `stats/summary.json`。
+  - 支持 `--max-train-samples` / `--max-test-samples` 做小规模 smoke 转换。
+- `tests/our_work/data_gen/test_convert_legacy_npy_dataset.py`
+  - 新增转换测试，覆盖 train/test 分片、schema、vocab、summary 和结构分析兼容性。
 - `README.md`
-  - 同步 PSO 材料库默认路径。
-  - 补充 `tqdm` 依赖说明和安装命令。
-- `tests/our_work/pso/test_run_pso_dataset.py`
-  - 新增进度条封装测试，验证 `tqdm` 接收总任务数和 rank 描述。
+  - 新增 `Step 4.2: 转换并分析旧 .npy 数据集`。
+  - 补充完整转换命令、smoke 命令、分析命令和无 RAPIDS 时的结构-only 分析命令。
+  - 将 PSO 小节顺延为 `Step 4.3` 和 `Step 4.4`。
+- `docs/notes.md`
+  - 覆盖为本次修改摘要。
+- `docs/logs/2026-04.md`
+  - 追加本次修改记录。
 
 ## 验证
-- `D:\anaconda\envs\oneday\python.exe -m pytest tests\our_work\pso\test_run_pso_dataset.py::test_progress_work_items_uses_tqdm_when_available -q -p no:cacheprovider`
-  - 结果：通过，`1 passed`
-- `D:\anaconda\envs\oneday\python.exe -m compileall our_work\pso\scripts\run_pso_dataset.py tests\our_work\pso\test_run_pso_dataset.py`
-  - 结果：通过
-- `git diff --check -- README.md docs\notes.md docs\logs\2026-04.md our_work\pso\configs\pso_supplement.yaml our_work\pso\scripts\run_pso_dataset.py tests\our_work\pso\test_run_pso_dataset.py`
-  - 结果：通过
-- `D:\anaconda\envs\oneday\python.exe -m pytest tests\our_work\pso\test_run_pso_dataset.py -q --basetemp .pytest-tmp-pso-progress -p no:cacheprovider`
-  - 结果：测试体输出为 `E..E`，但 pytest 会在 Windows 临时目录清理阶段报 `PermissionError`，真实失败信息被环境问题截断；已改用下方直连验证。
-- 直连验证脚本
-  - 覆盖 `progress_work_items(...)` 的 `tqdm` 参数、配置文件材料库路径、共享材料库存在性。
-  - 结果：通过，输出 `pso-progress-validation-ok`。
+- `D:\anaconda\envs\oneday\python.exe -m pytest tests\our_work\data_gen\test_convert_legacy_npy_dataset.py -q -p no:cacheprovider`
+  - 结果：通过，`2 passed`
+- 直连转换验证脚本
+  - 覆盖转换、manifest、parquet 读取、结构分析和 CLI max samples。
+  - 结果：通过，输出 `legacy-convert-direct-ok`
 
 ## Git
 - branch: `main`
-- commit: pending (`feat: add pso generation progress bar`)
+- commit: pending (`feat: add legacy npy dataset converter`)
