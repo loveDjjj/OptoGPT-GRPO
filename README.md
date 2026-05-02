@@ -277,7 +277,11 @@ torch 2.x.x cuda True
   - `data.max_samples_per_target: 100`
   - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
   - `data.include_seed_thickness_values: true`
+  - `targets.tasks: 默认显式写入 3 个 seeded 任务`
   - `targets.include_ids: null`
+  - `targets.tasks[*].bands: 只在声明的波段计算 loss`
+  - `targets.tasks[*].seed_tokens/random_init: 支持给参考结构或随机初始化结构`
+  - `ga_custom_tasks.yaml: 用户自定义任务模板`
   - `search.population_size: 8192`
   - `search.generations_per_restart: 20`
   - `search.restart_count: 5`
@@ -734,6 +738,13 @@ GA 补充数据集用于从已知优秀结构出发做局部变异和交叉，�
 cd /srv/OptoGPT-GRPO
 python -m our_work.ga.scripts.run_ga_dataset --config our_work/ga/configs/ga_seeded_absorbers.yaml
 ```
+
+GA 主入口现在直接支持 `targets.tasks` 自定义任务列表：
+- 默认配置 [our_work/ga/configs/ga_seeded_absorbers.yaml](/O:/Optics%20Code/OptoGPT-GRPO/our_work/ga/configs/ga_seeded_absorbers.yaml) 已显式写入 3 个 seeded 任务。
+- 自定义任务模板见 [our_work/ga/configs/ga_custom_tasks.yaml](/O:/Optics%20Code/OptoGPT-GRPO/our_work/ga/configs/ga_custom_tasks.yaml)。
+- 每个任务可在 `bands` 中声明高吸收/低吸收波段；未声明的波段不会进入 loss。
+- 若提供 `seed_tokens`，脚本会先检查厚度并拆分初始 seed 中 `>500 nm` 的层；若不提供，则按 `random_init` 在合法材料和厚度网格上随机生成初始结构。
+- `targets.include_ids` 可用于只运行任务列表中的部分 target。
 
 当前 GA 采用固定预算搜索。每个 target 会跑完 `search.restart_count * search.generations_per_restart`，不会因为样本数量达到上限就提前停止；候选池满后，新的更优样本会替换当前较差样本。
 

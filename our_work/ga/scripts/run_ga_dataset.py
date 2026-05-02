@@ -25,16 +25,31 @@ from our_work.data_gen.pipeline.token_vocab import build_token_vocab
 from our_work.data_gen.scripts.run_build_dataset import resolve_thickness_values_nm
 from our_work.ga.dataset_writer import write_ga_supplement_dataset
 from our_work.ga.search import GASearchConfig, TMMEvaluationConfig, make_tmm_evaluator, run_seeded_ga_search
-from our_work.ga.targets import GATargetProfile, build_default_ga_targets, seed_thickness_values_nm
+from our_work.ga.targets import (
+    GATargetProfile,
+    build_ga_targets_from_task_specs,
+    collect_seed_thickness_values,
+    default_ga_task_specs,
+)
 from our_work.ga.visualization import save_ga_spectrum_plots
 
 
 def resolve_ga_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
     data_cfg = config.get("data", {})
+    target_cfg = config.get("targets", {})
     search_cfg = config.get("search", {})
     thickness_values = resolve_thickness_values_nm(data_cfg)
     if bool(data_cfg.get("include_seed_thickness_values", True)):
-        thickness_values = sorted(set(thickness_values) | set(seed_thickness_values_nm()))
+        thickness_values = sorted(
+            set(thickness_values)
+            | set(
+                collect_seed_thickness_values(
+                    resolve_target_task_specs(target_cfg),
+                    max_seed_thickness_nm=int(data_cfg.get("thickness_range_nm", {}).get("max", 500)),
+                    thickness_step_nm=int(data_cfg.get("thickness_range_nm", {}).get("step", 10)),
+                )
+            )
+        )
     return {
         "thickness_values_nm": [int(value) for value in thickness_values],
         "train_ratio": float(data_cfg.get("train_ratio", 1.0)),
@@ -56,15 +71,43 @@ def resolve_ga_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_targets_from_config(wavelengths_um: np.ndarray, target_cfg: dict[str, Any]) -> list[GATargetProfile]:
-    targets = build_default_ga_targets(wavelengths_um)
+def resolve_target_task_specs(target_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    task_specs = target_cfg.get("tasks")
+    if task_specs is None:
+        task_specs = default_ga_task_specs()
+    if not isinstance(task_specs, list):
+        raise ValueError("targets.tasks must be a list when provided")
     include_ids = target_cfg.get("include_ids")
     if include_ids:
         allowed = {str(value) for value in include_ids}
-        targets = [target for target in targets if target.target_id in allowed]
-    if not targets:
+        task_specs = [dict(task_spec) for task_spec in task_specs if str(task_spec.get("target_id")) in allowed]
+    else:
+        task_specs = [dict(task_spec) for task_spec in task_specs]
+    if not task_specs:
         raise ValueError("No GA targets selected")
-    return targets
+    return task_specs
+
+
+def build_targets_from_config(
+    wavelengths_um: np.ndarray,
+    target_cfg: dict[str, Any],
+    *,
+    material_names: list[str],
+    thickness_values_nm: list[int],
+    seed: int,
+    max_seed_thickness_nm: int = 500,
+    thickness_step_nm: int = 10,
+) -> list[GATargetProfile]:
+    task_specs = resolve_target_task_specs(target_cfg)
+    return build_ga_targets_from_task_specs(
+        wavelengths_um,
+        task_specs,
+        material_names=material_names,
+        thickness_values_nm=thickness_values_nm,
+        seed=seed,
+        max_seed_thickness_nm=max_seed_thickness_nm,
+        thickness_step_nm=thickness_step_nm,
+    )
 
 
 def build_work_items(target_ids: list[str], *, rank: int = 0, world_size: int = 1) -> list[str]:
@@ -133,7 +176,15 @@ def main(argv: list[str] | None = None) -> None:
     wavelength_range_um = tuple(float(value) for value in tmm_cfg.get("wavelength_range_um", [2.0, 15.0]))
     num_points = int(tmm_cfg.get("num_points", 1024))
     wavelengths = np.linspace(wavelength_range_um[0], wavelength_range_um[1], num_points, dtype=np.float32)
-    targets = build_targets_from_config(wavelengths, config.get("targets", {}))
+    targets = build_targets_from_config(
+        wavelengths,
+        config.get("targets", {}),
+        material_names=material_names,
+        thickness_values_nm=runtime["thickness_values_nm"],
+        seed=seed,
+        max_seed_thickness_nm=int(config.get("data", {}).get("thickness_range_nm", {}).get("max", 500)),
+        thickness_step_nm=int(config.get("data", {}).get("thickness_range_nm", {}).get("step", 10)),
+    )
     target_by_id = {target.target_id: target for target in targets}
 
     rank, world_size, local_rank = _resolve_rank_context(config)

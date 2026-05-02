@@ -1,41 +1,39 @@
 # 本次修改摘要
 
 ## 需求
-- 解决 `our_work/ga` 在达到 `max_samples_per_target` 之后明显变慢的问题。
-- 重点优化池满后的去重、替换和候选筛选，尽量把可并行部分继续留在 GPU。
+- 让 `our_work/ga` 的同一个主入口支持“用户自定义任务列表”。
+- 默认 3 个 seeded 任务也不再只靠代码硬编码，而是显式写入 YAML 的 `targets.tasks`。
+- 每个任务支持：
+  - 用 `bands` 定义目标吸收光谱，高吸收写 `absorption: 1.0`，低吸收写 `absorption: 0.0`
+  - 可选 `seed_tokens` 参考初始结构
+  - 无 `seed_tokens` 时按 `random_init` 随机生成合法初始结构
 
 ## 实际修改
-- `our_work/ga/search.py`
-  - 新增 `build_numeric_structure_keys()`，候选池 key 由 token tuple 改为数值 key：
-    - `((material_idx...), (thickness_idx...))`
-  - 新增 `unique_population_rows()`，在每个 chunk 进入 TMM 前先做 batch 内 GPU 去重。
-  - 新增 `GAEvaluatedCandidate`，evaluator 先返回轻量候选，再只对真正入池的样本 materialize 为 `GAStructure`。
-  - 候选池满后：
-    - 每个 chunk 使用 `min(acceptance_floor_mse, current_worst_mse)` 作为动态 cutoff；
-    - 只保留本 batch 中最有可能替换池中最差样本的候选。
-  - 新增 `worst_heap`，用堆维护当前最差样本，替代反复 `max(accepted_map.items())` 的全池扫描。
-  - `total_evaluated` 现在统计“真正送入 evaluator/TMM 的去重后结构数”，不再把 batch 内重复结构重复计数。
-- `tests/our_work/ga/test_search.py`
-  - 新增数值 key 测试。
-  - 新增 batch 内 unique 测试。
-  - 新增池满后动态 cutoff 测试。
-  - 同步更新已有 full-budget 测试的评估计数预期。
+- `our_work/ga/targets.py`
+  - 新增 `DEFAULT_GA_TASK_SPECS` 和 `default_ga_task_specs()`，把默认 3 个 seeded 任务抽成显式任务规格。
+  - 新增 `build_ga_targets_from_task_specs()`，支持从 YAML 任务列表构造 GA target。
+  - 新增 `validate_seed_tokens()`，对给定 seed 做材料和厚度网格校验。
+  - 新增 `collect_seed_thickness_values()`，从任务列表里提取并预处理 seed 厚度。
+  - 新增随机初始化逻辑：无 `seed_tokens` 时按 `random_init` 生成合法初始结构。
+- `our_work/ga/scripts/run_ga_dataset.py`
+  - 新增 `resolve_target_task_specs()`。
+  - `build_targets_from_config()` 改为走 `targets.tasks` 配置链路。
+  - `resolve_ga_runtime_config()` 改为从配置任务列表里提取 seed 厚度，而不是只依赖旧的硬编码默认任务。
+- `our_work/ga/configs/ga_seeded_absorbers.yaml`
+  - 改为显式 `targets.tasks`，默认写入 3 个 seeded 任务。
+- `our_work/ga/configs/ga_custom_tasks.yaml`
+  - 新增用户自定义任务模板，演示“带 seed”与“无 seed 随机初始化”两种写法。
+- `tests/our_work/ga/test_targets.py`
+  - 补随机初始化任务、seed 厚度提取测试。
+- `tests/our_work/ga/test_run_ga_dataset.py`
+  - 补默认任务列表解析、显式 task 列表过滤测试，并把 smoke config 改为 `targets.tasks`。
+- `README.md`
+  - 同步 GA 主入口的 `targets.tasks` 用法和自定义模板说明。
 
-## 性能方向
-- 达到数量上限前：
-  - 主要瓶颈仍是 TMM，本轮不改变其数值逻辑。
-- 达到数量上限后：
-  - 先在 GPU 上去重、筛掉不可能入池的候选；
-  - 再用最差样本堆缩小 CPU 替换判定开销；
-  - 只为真正可能入池的候选生成 token 和样本对象。
-
-## 验证
-- `D:\anaconda\envs\oneday\python.exe -B -m pytest tests\our_work\ga -q -p no:cacheprovider --basetemp tests\.tmp-ga-opt`
-  - 结果：`17 passed`
-- 最小主入口烟测：
-  - 结果：`ga opt smoke ok`
-- `D:\anaconda\envs\oneday\python.exe -m compileall our_work\ga our_work\_shared\physics tests\our_work\ga`
-  - 待本次收尾后重新执行
+## 结果
+- `run_ga_dataset.py` 仍是唯一主入口。
+- 默认 3 个 seeded 任务与用户新增任务现在走同一套 YAML 结构。
+- 后续新增新的优化目标，不需要再改代码里的默认 target 构造逻辑，只需改 YAML。
 
 ## Git
 - branch: `main`
