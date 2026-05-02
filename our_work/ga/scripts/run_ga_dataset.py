@@ -152,7 +152,11 @@ def main(argv: list[str] | None = None) -> None:
         batch_size=int(tmm_cfg.get("batch_size", runtime["batch_size"])),
         device=None if tmm_device_name.strip().lower() == "auto" else tmm_device_name,
     )
-    evaluator = make_tmm_evaluator(tmm_config)
+    evaluator = make_tmm_evaluator(
+        tmm_config,
+        material_names=material_names,
+        thickness_values_nm=runtime["thickness_values_nm"],
+    )
 
     output_dir = base_output_dir if world_size == 1 else base_output_dir / f"rank{rank:02d}"
     all_accepted = []

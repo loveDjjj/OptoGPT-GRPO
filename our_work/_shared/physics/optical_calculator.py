@@ -411,6 +411,106 @@ def calculate_optical_properties_batch_torch(
     return wavelengths_tensor, reflections, transmissions
 
 
+def calculate_optical_properties_indexed_batch_torch(
+    material_indices,
+    thickness_nm,
+    material_names,
+    *,
+    database_path,
+    wavelength_range=(2, 15),
+    num_points=1000,
+    incident_angle=0.0,
+    polarization=0,
+    device=None,
+    complex_dtype=torch.complex128,
+    keep_grad=False,
+    debug=False,
+    material_bank_t=None,
+    wavelengths_tensor=None,
+    k_tensor=None,
+):
+    """Indexed batch TMM path for search loops that keep structures in tensor form."""
+
+    complex_dtype = resolve_complex_dtype(complex_dtype)
+    if complex_dtype not in (torch.complex64, torch.complex128):
+        print("错误: complex_dtype 只能是 torch.complex64 或 torch.complex128")
+        return None, None, None
+    real_dtype = torch.float64 if complex_dtype == torch.complex128 else torch.float32
+
+    if not torch.is_tensor(material_indices):
+        material_indices = torch.as_tensor(material_indices, dtype=torch.long)
+    else:
+        material_indices = material_indices.to(dtype=torch.long)
+    if not torch.is_tensor(thickness_nm):
+        thickness_nm = torch.as_tensor(thickness_nm, dtype=real_dtype)
+    else:
+        thickness_nm = thickness_nm.to(dtype=real_dtype)
+
+    if material_indices.ndim != 2 or thickness_nm.ndim != 2 or material_indices.shape != thickness_nm.shape:
+        raise ValueError("material_indices and thickness_nm must have the same 2D shape")
+    if len(material_names) <= 0:
+        raise ValueError("material_names must not be empty")
+
+    if device is None:
+        torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        torch_device = torch.device(device)
+    material_indices = material_indices.to(device=torch_device, dtype=torch.long)
+    thickness_nm = thickness_nm.to(device=torch_device, dtype=real_dtype)
+
+    if wavelengths_tensor is None or k_tensor is None or material_bank_t is None:
+        wavelengths, k = _get_wavelength_grid(wavelength_range, int(num_points))
+        wl_len = len(wavelengths)
+        resolved_database_path = _resolve_database_path(database_path)
+
+        material_bank = []
+        for material in material_names:
+            ri = _get_material_refractive_index(material, resolved_database_path, wavelengths)
+            if ri is None:
+                print(f"错误: 没有 {material} 的数据")
+                return None, None, None
+            material_bank.append(torch.from_numpy(ri).to(device=torch_device, dtype=complex_dtype))
+        material_bank_t = torch.stack(material_bank, dim=0)
+        wavelengths_tensor = torch.tensor(wavelengths, dtype=real_dtype, device=torch_device)
+        k_tensor = torch.tensor(k, dtype=real_dtype, device=torch_device)
+    else:
+        material_bank_t = material_bank_t.to(device=torch_device, dtype=complex_dtype)
+        wavelengths_tensor = wavelengths_tensor.to(device=torch_device, dtype=real_dtype)
+        k_tensor = k_tensor.to(device=torch_device, dtype=real_dtype)
+        wl_len = int(wavelengths_tensor.numel())
+
+    air_n = torch.ones((1, 1, wl_len), dtype=complex_dtype, device=torch_device)
+    gathered_indices = material_bank_t[material_indices]
+    refractive_indices_batch = torch.cat(
+        [
+            air_n.expand(material_indices.shape[0], -1, -1),
+            gathered_indices,
+            air_n.expand(material_indices.shape[0], -1, -1),
+        ],
+        dim=1,
+    )
+
+    zero_th = torch.zeros((thickness_nm.shape[0], 1), dtype=real_dtype, device=torch_device)
+    thickness_um = thickness_nm / 1000.0
+    thickness_full = torch.cat([zero_th, thickness_um, zero_th], dim=1)
+    thicknesses_batch = thickness_full.unsqueeze(1).expand(-1, wl_len, -1).to(complex_dtype)
+
+    incident_angle_value = incident_angle.to(device=torch_device, dtype=real_dtype) if torch.is_tensor(incident_angle) else float(incident_angle)
+
+    grad_context = torch.enable_grad() if keep_grad else torch.no_grad()
+    with grad_context:
+        reflections, transmissions = TMM_solver(
+            thicknesses_batch,
+            refractive_indices_batch,
+            k_tensor,
+            incident_angle_value,
+            polarization,
+            debug=debug,
+        )
+
+    return wavelengths_tensor, reflections, transmissions
+
+
 def calculate_absorption(wavelengths, reflection, transmission):
     """
     从反射率和透射率计算吸收率

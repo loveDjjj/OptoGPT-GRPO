@@ -1,11 +1,14 @@
 import numpy as np
+import torch
 
 from our_work.ga.search import (
     GASearchConfig,
     GAStructure,
     build_initial_population,
+    build_initial_population_tensors,
     compute_masked_mse,
     run_seeded_ga_search,
+    tensor_population_to_token_groups,
 )
 from our_work.ga.targets import GATargetProfile
 
@@ -71,6 +74,40 @@ def test_build_initial_population_preprocesses_seed_layers_above_500nm():
     assert population[0] == ["YbF3_430", "YbF3_440", "Au_100"]
 
 
+def test_build_initial_population_tensors_preserve_seed_tokens_and_allowed_ranges():
+    target = GATargetProfile(
+        target_id="demo",
+        family="seeded",
+        absorption=np.ones((4,), dtype=np.float32),
+        loss_mask=np.ones((4,), dtype=bool),
+        seed_tokens=["Ge_100", "SiO2_200"],
+    )
+
+    material_idx, thickness_idx = build_initial_population_tensors(
+        target=target,
+        material_names=["Ge", "SiO2", "Au"],
+        thickness_values_nm=[100, 200, 300],
+        population_size=8,
+        material_mutation_rate=0.8,
+        thickness_mutation_rate=0.8,
+        thickness_mutation_steps=2,
+        seed=123,
+        device=torch.device("cpu"),
+    )
+    population = tensor_population_to_token_groups(
+        material_idx,
+        thickness_idx,
+        material_names=["Ge", "SiO2", "Au"],
+        thickness_values_nm=[100, 200, 300],
+    )
+
+    assert population[0] == ["Ge_100", "SiO2_200"]
+    assert material_idx.shape == (8, 2)
+    assert thickness_idx.shape == (8, 2)
+    assert torch.all((material_idx >= 0) & (material_idx <= 2))
+    assert torch.all((thickness_idx >= 0) & (thickness_idx <= 2))
+
+
 def test_run_seeded_ga_search_runs_full_budget_and_replaces_worse_samples():
     target = GATargetProfile(
         target_id="demo",
@@ -82,10 +119,16 @@ def test_run_seeded_ga_search_runs_full_budget_and_replaces_worse_samples():
 
     call_counter = {"value": 0}
 
-    def fake_evaluator(token_groups, target_profile, threshold):
+    def fake_evaluator(material_idx, thickness_idx, target_profile, threshold):
         scores = []
         accepted = []
-        for tokens in token_groups:
+        population = tensor_population_to_token_groups(
+            material_idx,
+            thickness_idx,
+            material_names=["Ge", "SiO2"],
+            thickness_values_nm=[100],
+        )
+        for tokens in population:
             current_call = call_counter["value"]
             if current_call < 2:
                 loss = 0.02
@@ -109,7 +152,7 @@ def test_run_seeded_ga_search_runs_full_budget_and_replaces_worse_samples():
                         ga_generation=0,
                     )
                 )
-        return np.asarray(scores, dtype=np.float32), accepted
+        return torch.tensor(scores, dtype=torch.float32), accepted
 
     result = run_seeded_ga_search(
         target=target,

@@ -1,41 +1,51 @@
 # 本次修改摘要
 
 ## 需求
-- 修正 `our_work/ga` 的搜索逻辑，不再“达到数量或阈值就提前停”。
-- 让 GA 在固定 `restart_count * generations_per_restart` 预算内持续搜索，并用更优样本替换当前较差样本。
-- 仅对初始优秀 seed 结构中超过 `500 nm` 的层做预处理拆分；后续搜索空间仍严格限制在 `10-500 nm, step 10`。
-- 进度条需要显示当前 target 已保留的合格样本数。
+- 提升 `our_work/ga` 的 GPU 利用率，减少大量 Python/CPU 串行准备造成的空转。
+- 保持现有 YAML、数据集输出、可视化和主入口不变，只做中等改造。
 
 ## 实际修改
-- `our_work/ga/targets.py`
-  - 新 seed 预处理规则改为确定性的 `floor/ceil` 风格拆分。
-  - `seed_thickness_values_nm()` 改为基于“拆分后的合法 seed”提取厚度，避免把 `820/850/870 nm` 放回 GA 搜索空间。
 - `our_work/ga/search.py`
-  - 初始种群和随机注入都统一走 seed 预处理。
-  - `run_seeded_ga_search()` 改为固定预算运行，不再因达到样本数提前停止。
-  - 增加去重 top-K 候选池替换逻辑和 `replacement_count` 统计。
-  - 增加代内进度回调，供外层实时显示 `kept_count / max_samples_per_target`。
+  - GA 种群内部表示改为 `torch.Tensor`：
+    - `material_idx: [population, layers]`
+    - `thickness_idx: [population, layers]`
+  - 初始种群、父代选择、uniform crossover、材料变异、厚度变异、随机注入全部改为 tensor 路径。
+  - `run_seeded_ga_search()` 改为直接按 tensor chunk 调 evaluator，不再先构造整批 token 字符串。
+  - 打分张量、进化张量和 chunk 结果拼接都留在设备侧完成。
+  - 只有 accepted 样本才转回 `structure_tokens` 并搬回 CPU，用于去重、写盘和可视化。
+- `our_work/_shared/physics/optical_calculator.py`
+  - 新增 `calculate_optical_properties_indexed_batch_torch()`：
+    - 直接接收 `material_indices + thickness_nm` tensor；
+    - 在设备侧组装 `thicknesses_batch / refractive_indices_batch`；
+    - 避免 `tokens_to_tmm_config()` 这层 Python 结构转换。
+  - 支持传入缓存的 `material_bank_t / wavelengths_tensor / k_tensor`，避免每个 batch 重复构造材料折射率 bank。
 - `our_work/ga/scripts/run_ga_dataset.py`
-  - tqdm postfix 接入 target / restart / generation / kept / best / worst。
-  - 运行配置继续兼容旧字段名，但主配置和文档已切换到新语义。
-- `our_work/ga/configs/ga_seeded_absorbers.yaml`
-  - 改为新字段：`max_samples_per_target`、`generations_per_restart`、`restart_count`、`acceptance_floor_mse`。
-  - 明确注释：固定预算搜索、seed 仅预处理一次、后续候选不允许超出主模型厚度范围。
-- `tests/our_work/ga/test_targets.py`
-  - 校验 seed 拆分结果。
+  - `make_tmm_evaluator()` 接线到新的 tensor evaluator。
 - `tests/our_work/ga/test_search.py`
-  - 校验初始种群会先预处理 seed。
-  - 校验搜索会跑完整预算，并允许更优重复样本替换旧记录。
-- `tests/our_work/ga/test_run_ga_dataset.py`
-  - 校验 runtime 厚度集合不会重新包含大于 `500 nm` 的非法 seed 厚度。
+  - 新增 tensor 初始种群测试，校验 seed 语义和离散索引范围。
+- `tests/our_work/ga/test_indexed_tmm.py`
+  - 新增 indexed TMM 数值一致性测试，确保新路径与旧 token 路径反射/透射一致。
+
+## 性能方向
+- 去掉了“每个 GA chunk 先转 token，再转 TMM config，再回 CPU 算 loss”的主路径。
+- 现在 GPU 侧承担：
+  - 种群状态表示
+  - 交叉/变异
+  - `A = 1 - R - T`
+  - masked MSE
+  - threshold 过滤
+- CPU 侧主要只保留：
+  - 少量 accepted 样本去重
+  - 结果落盘
+  - tqdm/summary
 
 ## 验证
-- `D:\anaconda\envs\oneday\python.exe -B -m pytest tests\our_work\ga\test_targets.py tests\our_work\ga\test_search.py tests\our_work\ga\test_run_ga_dataset.py -q -p no:cacheprovider --basetemp tests\.tmp-ga-budget`
-  - 测试主体通过，但 `pytest` 在 Windows 临时目录清理阶段报 `PermissionError`；这是环境清理问题，不是本次 GA 逻辑断言失败。
+- `D:\anaconda\envs\oneday\python.exe -B -m pytest tests\our_work\ga -q -p no:cacheprovider --basetemp tests\.tmp-ga-all`
+  - 结果：`14 passed`
+- 最小主入口烟测：
+  - `run_ga_dataset.main(...)` 走通，输出 `ga tensor smoke ok`
 - `D:\anaconda\envs\oneday\python.exe -m compileall our_work\ga tests\our_work\ga`
-  - 通过。
-- `git diff --check -- our_work/ga README.md docs/notes.md docs/logs tests/our_work/ga`
-  - 通过。
+  - 待本次收尾后重新执行
 
 ## Git
 - branch: `main`
