@@ -38,11 +38,11 @@ targets:
 
 search:
   # 种群规模。越大越能并行吃满 TMM/GPU，但显存和单代耗时也更高。
-  population_size: 4096
+  population_size: 8192
   # 每个 restart 的 GA 代数。
-  generations: 80
+  generations: 20
   # 每次送入 TMM 的结构数。主要控制 GPU 并行度和显存。
-  batch_size: 1024
+  batch_size: 8192
   # 接受阈值：只保留 masked absorption MSE < 0.005 的结构。
   acceptance_mse_threshold: 0.005
   # 精英保留比例。
@@ -62,7 +62,7 @@ search:
   # 连续多少代没有新合格且未重复结构后，切换新随机种子。
   max_stagnant_generations: 12
   # 每个目标最多重启多少次。
-  max_restarts: 20
+  max_restarts: 5
   # auto 会优先让 TMM 使用 CUDA；多进程时建议用 torchrun 并让脚本按 LOCAL_RANK 分配 cuda:<rank>。
   device: auto
 
@@ -75,7 +75,7 @@ tmm:
   tolerance: 0.001
   complex_dtype: complex128
   # TMM 内部 chunk。通常不大于 search.batch_size；显存不足时先降这个值。
-  batch_size: 1024
+  batch_size: 4096
   device: auto
 
 shards:
