@@ -10,15 +10,16 @@ def test_resolve_ga_runtime_config_augments_seed_thicknesses_when_enabled():
         "data": {
             "thickness_range_nm": {"min": 10, "max": 500, "step": 10},
             "include_seed_thickness_values": True,
-            "target_sample_count": 100,
+            "max_samples_per_target": 100,
         },
-        "search": {"population_size": 16, "generations": 4, "batch_size": 8},
+        "search": {"population_size": 16, "generations_per_restart": 4, "batch_size": 8},
     }
 
     runtime = resolve_ga_runtime_config(config)
 
-    assert 870 in runtime["thickness_values_nm"]
-    assert runtime["target_sample_count"] == 100
+    assert 440 in runtime["thickness_values_nm"]
+    assert max(runtime["thickness_values_nm"]) <= 500
+    assert runtime["max_samples_per_target"] == 100
     assert runtime["population_size"] == 16
 
 
@@ -44,14 +45,15 @@ def test_run_ga_dataset_main_writes_dataset_with_tiny_tmm_smoke(tmp_path: Path):
                     "include_seed_thickness_values": True,
                     "train_ratio": 1.0,
                     "val_ratio": 0.0,
-                    "target_sample_count": 1,
+                    "max_samples_per_target": 1,
                 },
                 "targets": {"include_ids": ["broad_3_13_high"]},
                 "search": {
                     "population_size": 2,
-                    "generations": 1,
+                    "generations_per_restart": 1,
+                    "restart_count": 1,
                     "batch_size": 2,
-                    "acceptance_mse_threshold": 0.005,
+                    "acceptance_floor_mse": 0.005,
                     "elite_fraction": 0.5,
                     "tournament_size": 2,
                     "crossover_rate": 0.8,
@@ -59,8 +61,6 @@ def test_run_ga_dataset_main_writes_dataset_with_tiny_tmm_smoke(tmp_path: Path):
                     "thickness_mutation_rate": 0.0,
                     "thickness_mutation_steps": 1,
                     "random_injection_rate": 0.0,
-                    "max_stagnant_generations": 1,
-                    "max_restarts": 1,
                     "device": "cpu",
                 },
                 "tmm": {

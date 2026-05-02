@@ -39,11 +39,12 @@ def resolve_ga_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
         "thickness_values_nm": [int(value) for value in thickness_values],
         "train_ratio": float(data_cfg.get("train_ratio", 1.0)),
         "val_ratio": float(data_cfg.get("val_ratio", 0.0)),
-        "target_sample_count": int(data_cfg.get("target_sample_count", 100)),
+        "max_samples_per_target": int(data_cfg.get("max_samples_per_target", data_cfg.get("target_sample_count", 100))),
         "population_size": int(search_cfg.get("population_size", 4096)),
-        "generations": int(search_cfg.get("generations", 80)),
+        "generations_per_restart": int(search_cfg.get("generations_per_restart", search_cfg.get("generations", 80))),
+        "restart_count": int(search_cfg.get("restart_count", search_cfg.get("max_restarts", 20))),
         "batch_size": int(search_cfg.get("batch_size", 1024)),
-        "acceptance_mse_threshold": float(search_cfg.get("acceptance_mse_threshold", 0.005)),
+        "acceptance_floor_mse": float(search_cfg.get("acceptance_floor_mse", search_cfg.get("acceptance_mse_threshold", 0.005))),
         "elite_fraction": float(search_cfg.get("elite_fraction", 0.15)),
         "tournament_size": int(search_cfg.get("tournament_size", 4)),
         "crossover_rate": float(search_cfg.get("crossover_rate", 0.8)),
@@ -51,8 +52,6 @@ def resolve_ga_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
         "thickness_mutation_rate": float(search_cfg.get("thickness_mutation_rate", 0.35)),
         "thickness_mutation_steps": int(search_cfg.get("thickness_mutation_steps", 6)),
         "random_injection_rate": float(search_cfg.get("random_injection_rate", 0.08)),
-        "max_stagnant_generations": int(search_cfg.get("max_stagnant_generations", 12)),
-        "max_restarts": int(search_cfg.get("max_restarts", 20)),
         "device": str(search_cfg.get("device", "auto")),
     }
 
@@ -76,9 +75,8 @@ def build_work_items(target_ids: list[str], *, rank: int = 0, world_size: int = 
 
 def progress_work_items(work_items: list[str], *, rank: int, world_size: int):
     if tqdm is None:
-        yield from work_items
-        return
-    yield from tqdm(work_items, total=len(work_items), desc=f"ga rank {rank}/{world_size}", unit="target", dynamic_ncols=True)
+        return work_items
+    return tqdm(work_items, total=len(work_items), desc=f"ga rank {rank}/{world_size}", unit="target", dynamic_ncols=True)
 
 
 def _resolve_rank_context(config: dict[str, Any]) -> tuple[int, int, int]:
@@ -160,7 +158,21 @@ def main(argv: list[str] | None = None) -> None:
     all_accepted = []
     global_seen: set[tuple[str, ...]] = set()
     search_summaries: list[dict[str, Any]] = []
-    for item_index, target_id in enumerate(progress_work_items(work_items, rank=rank, world_size=world_size)):
+    progress = progress_work_items(work_items, rank=rank, world_size=world_size)
+
+    def _set_progress(state: dict[str, Any]) -> None:
+        if tqdm is None or not hasattr(progress, "set_postfix"):
+            return
+        progress.set_postfix(
+            target=state["target_id"],
+            restart=f"{int(state['restart_index']) + 1}/{int(state['restart_count'])}",
+            gen=f"{int(state['generation']) + 1}/{int(state['generations_per_restart'])}",
+            kept=f"{int(state['kept_count'])}/{int(state['max_samples_per_target'])}",
+            best=f"{float(state['best_mse']):.4g}" if np.isfinite(float(state["best_mse"])) else "nan",
+            worst=f"{float(state['worst_kept_mse']):.4g}" if np.isfinite(float(state["worst_kept_mse"])) else "nan",
+        )
+
+    for item_index, target_id in enumerate(progress):
         target = target_by_id[target_id]
         result = run_seeded_ga_search(
             target=target,
@@ -168,10 +180,11 @@ def main(argv: list[str] | None = None) -> None:
             thickness_values_nm=runtime["thickness_values_nm"],
             config=GASearchConfig(
                 population_size=runtime["population_size"],
-                generations=runtime["generations"],
+                generations_per_restart=runtime["generations_per_restart"],
+                restart_count=runtime["restart_count"],
                 batch_size=runtime["batch_size"],
-                max_accepted=runtime["target_sample_count"],
-                acceptance_mse_threshold=runtime["acceptance_mse_threshold"],
+                max_samples_per_target=runtime["max_samples_per_target"],
+                acceptance_floor_mse=runtime["acceptance_floor_mse"],
                 elite_fraction=runtime["elite_fraction"],
                 tournament_size=runtime["tournament_size"],
                 crossover_rate=runtime["crossover_rate"],
@@ -179,12 +192,11 @@ def main(argv: list[str] | None = None) -> None:
                 thickness_mutation_rate=runtime["thickness_mutation_rate"],
                 thickness_mutation_steps=runtime["thickness_mutation_steps"],
                 random_injection_rate=runtime["random_injection_rate"],
-                max_stagnant_generations=runtime["max_stagnant_generations"],
-                max_restarts=runtime["max_restarts"],
                 seed=seed + item_index,
                 device=_resolve_rank_device(runtime["device"], local_rank=local_rank, dist_enabled=dist_enabled),
             ),
             evaluator=evaluator,
+            progress_callback=_set_progress,
         )
         newly_kept = 0
         global_duplicates = 0
@@ -206,9 +218,12 @@ def main(argv: list[str] | None = None) -> None:
                 "shortfall": result.shortfall,
                 "total_evaluated": result.total_evaluated,
                 "duplicate_accepted": result.duplicate_accepted,
+                "replacement_count": result.replacement_count,
                 "restarts_used": result.restarts_used,
             }
         )
+        if tqdm is not None and hasattr(progress, "set_postfix"):
+            progress.set_postfix(target=target_id, kept=f"{newly_kept}/{runtime['max_samples_per_target']}", status="done")
 
     manifest = write_ga_supplement_dataset(
         output_dir=output_dir,
@@ -216,7 +231,7 @@ def main(argv: list[str] | None = None) -> None:
         token_to_id=vocab.token_to_id,
         vocab_tokens=_vocab_tokens(vocab),
         records_per_shard=int(config.get("shards", {}).get("records_per_shard", 50000)),
-        acceptance_mse_threshold=runtime["acceptance_mse_threshold"],
+        acceptance_floor_mse=runtime["acceptance_floor_mse"],
         train_ratio=runtime["train_ratio"],
         val_ratio=runtime["val_ratio"],
         seed=seed,
@@ -243,8 +258,8 @@ def main(argv: list[str] | None = None) -> None:
                 "world_size": world_size,
                 "work_item_count": len(work_items),
                 "accepted_count": len(all_accepted),
-                "target_sample_count": runtime["target_sample_count"],
-                "acceptance_mse_threshold": runtime["acceptance_mse_threshold"],
+                "max_samples_per_target": runtime["max_samples_per_target"],
+                "acceptance_floor_mse": runtime["acceptance_floor_mse"],
                 "split_manifest": manifest,
                 "visualization_artifacts": artifacts,
                 "search": search_summaries,

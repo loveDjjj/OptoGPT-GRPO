@@ -274,15 +274,15 @@ torch 2.x.x cuda True
 - `ga_seeded_absorbers.yaml`
   - `paths.database_dir: our_work/_shared/database`
   - `paths.output_dir: outputs/our_work/data_gen/ga_seeded_absorbers`
-  - `data.target_sample_count: 100`
+  - `data.max_samples_per_target: 100`
   - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
   - `data.include_seed_thickness_values: true`
   - `targets.include_ids: null`
-  - `search.population_size: 4096`
-  - `search.generations: 80`
-  - `search.batch_size: 1024`
-  - `search.acceptance_mse_threshold: 0.005`
-  - `search.max_restarts: 20`
+  - `search.population_size: 8192`
+  - `search.generations_per_restart: 20`
+  - `search.restart_count: 5`
+  - `search.batch_size: 8192`
+  - `search.acceptance_floor_mse: 0.005`
   - `tmm.wavelength_range_um: [2.0, 15.0]`
   - `tmm.num_points: 1024`
   - `visualization.enabled: true`
@@ -734,6 +734,8 @@ GA 补充数据集用于从已知优秀结构出发做局部变异和交叉，�
 cd /srv/OptoGPT-GRPO
 python -m our_work.ga.scripts.run_ga_dataset --config our_work/ga/configs/ga_seeded_absorbers.yaml
 ```
+
+当前 GA 采用固定预算搜索。每个 target 会跑完 `search.restart_count * search.generations_per_restart`，不会因为样本数量达到上限就提前停止；候选池满后，新的更优样本会替换当前较差样本。
 
 该步骤完成后应出现：
 

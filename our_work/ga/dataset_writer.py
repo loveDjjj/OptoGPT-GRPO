@@ -18,7 +18,7 @@ def serialize_ga_structure(
     *,
     sample_id: str,
     token_to_id: dict[str, int],
-    acceptance_mse_threshold: float,
+    acceptance_floor_mse: float,
 ) -> dict[str, Any]:
     materials: list[str] = []
     thickness_nm: list[int] = []
@@ -38,7 +38,7 @@ def serialize_ga_structure(
         "target_id": accepted.target_id,
         "target_family": accepted.target_family,
         "target_mse": float(accepted.target_mse),
-        "acceptance_mse_threshold": float(acceptance_mse_threshold),
+        "acceptance_floor_mse": float(acceptance_floor_mse),
         "ga_seed": int(accepted.ga_seed),
         "ga_restart_index": int(accepted.ga_restart_index),
         "ga_generation": int(accepted.ga_generation),
@@ -80,7 +80,7 @@ def write_ga_supplement_dataset(
     token_to_id: dict[str, int],
     vocab_tokens: list[str],
     records_per_shard: int,
-    acceptance_mse_threshold: float,
+    acceptance_floor_mse: float,
     train_ratio: float,
     val_ratio: float,
     seed: int,
@@ -95,7 +95,7 @@ def write_ga_supplement_dataset(
             item,
             sample_id=f"ga-{index}",
             token_to_id=token_to_id,
-            acceptance_mse_threshold=acceptance_mse_threshold,
+            acceptance_floor_mse=acceptance_floor_mse,
         )
         for index, item in enumerate(accepted)
     ]
@@ -124,4 +124,3 @@ def write_ga_supplement_dataset(
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest
-

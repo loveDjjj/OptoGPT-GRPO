@@ -48,7 +48,30 @@ def test_build_initial_population_mutates_seed_with_allowed_materials_and_thickn
             assert int(thickness) in {100, 200, 300}
 
 
-def test_run_seeded_ga_search_keeps_unique_structures_below_threshold():
+def test_build_initial_population_preprocesses_seed_layers_above_500nm():
+    target = GATargetProfile(
+        target_id="demo",
+        family="seeded",
+        absorption=np.ones((4,), dtype=np.float32),
+        loss_mask=np.ones((4,), dtype=bool),
+        seed_tokens=["YbF3_870", "Au_100"],
+    )
+
+    population = build_initial_population(
+        target=target,
+        material_names=["YbF3", "Au"],
+        thickness_values_nm=list(range(10, 501, 10)),
+        population_size=2,
+        material_mutation_rate=0.0,
+        thickness_mutation_rate=0.0,
+        thickness_mutation_steps=1,
+        seed=123,
+    )
+
+    assert population[0] == ["YbF3_430", "YbF3_440", "Au_100"]
+
+
+def test_run_seeded_ga_search_runs_full_budget_and_replaces_worse_samples():
     target = GATargetProfile(
         target_id="demo",
         family="seeded",
@@ -57,11 +80,20 @@ def test_run_seeded_ga_search_keeps_unique_structures_below_threshold():
         seed_tokens=["Ge_100"],
     )
 
+    call_counter = {"value": 0}
+
     def fake_evaluator(token_groups, target_profile, threshold):
         scores = []
         accepted = []
         for tokens in token_groups:
-            loss = 0.001 if tokens[0] == "Ge_100" else 0.2
+            current_call = call_counter["value"]
+            if current_call < 2:
+                loss = 0.02
+            elif current_call < 4:
+                loss = 0.01
+            else:
+                loss = 0.003
+            call_counter["value"] += 1
             scores.append(-loss)
             if loss < threshold:
                 accepted.append(
@@ -84,11 +116,12 @@ def test_run_seeded_ga_search_keeps_unique_structures_below_threshold():
         material_names=["Ge", "SiO2"],
         thickness_values_nm=[100],
         config=GASearchConfig(
-            population_size=6,
-            generations=3,
-            batch_size=3,
-            max_accepted=2,
-            acceptance_mse_threshold=0.005,
+            population_size=4,
+            generations_per_restart=2,
+            restart_count=2,
+            batch_size=2,
+            max_samples_per_target=1,
+            acceptance_floor_mse=0.05,
             elite_fraction=0.5,
             tournament_size=2,
             crossover_rate=0.8,
@@ -96,8 +129,6 @@ def test_run_seeded_ga_search_keeps_unique_structures_below_threshold():
             thickness_mutation_rate=0.0,
             thickness_mutation_steps=1,
             random_injection_rate=0.0,
-            max_stagnant_generations=2,
-            max_restarts=1,
             seed=7,
             device="cpu",
         ),
@@ -106,5 +137,8 @@ def test_run_seeded_ga_search_keeps_unique_structures_below_threshold():
 
     assert len(result.accepted) == 1
     assert result.accepted[0].structure_tokens == ["Ge_100"]
+    assert result.accepted[0].target_mse == 0.003
+    assert result.restarts_used == 2
+    assert result.total_evaluated == 16
+    assert result.replacement_count >= 2
     assert result.duplicate_accepted > 0
-    assert result.shortfall == 1

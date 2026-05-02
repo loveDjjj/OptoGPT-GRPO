@@ -6,7 +6,7 @@ from typing import Callable
 import numpy as np
 
 from our_work.data_gen.pipeline.simulator import simulate_structure_batch
-from our_work.ga.targets import GATargetProfile
+from our_work.ga.targets import GATargetProfile, preprocess_seed_tokens
 
 
 @dataclass(frozen=True)
@@ -25,10 +25,11 @@ class GAStructure:
 @dataclass(frozen=True)
 class GASearchConfig:
     population_size: int
-    generations: int
+    generations_per_restart: int
+    restart_count: int
     batch_size: int
-    max_accepted: int
-    acceptance_mse_threshold: float
+    max_samples_per_target: int
+    acceptance_floor_mse: float
     elite_fraction: float
     tournament_size: int
     crossover_rate: float
@@ -36,8 +37,6 @@ class GASearchConfig:
     thickness_mutation_rate: float
     thickness_mutation_steps: int
     random_injection_rate: float
-    max_stagnant_generations: int
-    max_restarts: int
     seed: int
     device: str = "auto"
 
@@ -62,11 +61,13 @@ class GASearchResult:
     layer_count: int
     total_evaluated: int
     duplicate_accepted: int
+    replacement_count: int
     restarts_used: int
     shortfall: int
 
 
 Evaluator = Callable[[list[list[str]], GATargetProfile, float], tuple[np.ndarray, list[GAStructure]]]
+ProgressCallback = Callable[[dict[str, int | float | str]], None]
 
 
 def _split_token(token: str) -> tuple[str, int]:
@@ -139,7 +140,7 @@ def build_initial_population(
         raise ValueError("population_size must be positive")
     rng = np.random.default_rng(int(seed))
     seed_tokens = _normalize_tokens(
-        list(target.seed_tokens),
+        preprocess_seed_tokens(list(target.seed_tokens)),
         material_names=material_names,
         thickness_values_nm=thickness_values_nm,
     )
@@ -172,7 +173,7 @@ def evaluate_tokens_with_tmm(
     target: GATargetProfile,
     *,
     tmm_config: TMMEvaluationConfig,
-    acceptance_mse_threshold: float,
+    acceptance_floor_mse: float,
 ) -> tuple[np.ndarray, list[GAStructure]]:
     scores: list[float] = []
     accepted: list[GAStructure] = []
@@ -200,7 +201,7 @@ def evaluate_tokens_with_tmm(
             absorption = 1.0 - reflection_arr - transmission_arr
             loss = compute_masked_mse(absorption, target.absorption, target.loss_mask)
             scores.append(-loss)
-            if loss < float(acceptance_mse_threshold):
+            if loss < float(acceptance_floor_mse):
                 accepted.append(
                     GAStructure(
                         structure_tokens=list(tokens),
@@ -223,7 +224,7 @@ def make_tmm_evaluator(tmm_config: TMMEvaluationConfig) -> Evaluator:
             token_groups,
             target,
             tmm_config=tmm_config,
-            acceptance_mse_threshold=threshold,
+            acceptance_floor_mse=threshold,
         )
 
     return _evaluate
@@ -261,7 +262,7 @@ def _next_population(
     while len(next_pop) < population_size:
         if rng.random() < float(config.random_injection_rate):
             seed_tokens = _normalize_tokens(
-                list(target.seed_tokens),
+                preprocess_seed_tokens(list(target.seed_tokens)),
                 material_names=material_names,
                 thickness_values_nm=thickness_values_nm,
             )
@@ -298,19 +299,45 @@ def run_seeded_ga_search(
     thickness_values_nm: list[int],
     config: GASearchConfig,
     evaluator: Evaluator,
+    progress_callback: ProgressCallback | None = None,
 ) -> GASearchResult:
-    if config.population_size <= 0 or config.generations <= 0 or config.batch_size <= 0:
-        raise ValueError("population_size, generations, and batch_size must be positive")
-    if config.max_accepted <= 0:
-        raise ValueError("max_accepted must be positive")
+    if config.population_size <= 0 or config.generations_per_restart <= 0 or config.batch_size <= 0:
+        raise ValueError("population_size, generations_per_restart, and batch_size must be positive")
+    if config.restart_count <= 0:
+        raise ValueError("restart_count must be positive")
+    if config.max_samples_per_target <= 0:
+        raise ValueError("max_samples_per_target must be positive")
 
-    accepted: list[GAStructure] = []
-    seen: set[tuple[str, ...]] = set()
+    accepted_map: dict[tuple[str, ...], GAStructure] = {}
     duplicate_accepted = 0
+    replacement_count = 0
     total_evaluated = 0
     restarts_used = 0
 
-    for restart_index in range(max(1, int(config.max_restarts))):
+    def emit_progress(*, restart_index: int, generation: int) -> None:
+        if progress_callback is None:
+            return
+        kept_count = len(accepted_map)
+        best_mse = min((float(item.target_mse) for item in accepted_map.values()), default=float("nan"))
+        worst_kept_mse = max((float(item.target_mse) for item in accepted_map.values()), default=float("nan"))
+        progress_callback(
+            {
+                "target_id": target.target_id,
+                "restart_index": int(restart_index),
+                "restart_count": int(config.restart_count),
+                "generation": int(generation),
+                "generations_per_restart": int(config.generations_per_restart),
+                "kept_count": kept_count,
+                "max_samples_per_target": int(config.max_samples_per_target),
+                "best_mse": best_mse,
+                "worst_kept_mse": worst_kept_mse,
+                "replacement_count": int(replacement_count),
+                "duplicate_accepted": int(duplicate_accepted),
+                "total_evaluated": int(total_evaluated),
+            }
+        )
+
+    for restart_index in range(int(config.restart_count)):
         restarts_used += 1
         restart_seed = int(config.seed) + restart_index
         rng = np.random.default_rng(restart_seed)
@@ -324,48 +351,38 @@ def run_seeded_ga_search(
             thickness_mutation_steps=config.thickness_mutation_steps,
             seed=restart_seed,
         )
-        stagnant_generations = 0
-        for generation in range(int(config.generations)):
+        for generation in range(int(config.generations_per_restart)):
             score_chunks: list[np.ndarray] = []
-            generation_new = 0
             for start in range(0, len(population), int(config.batch_size)):
                 chunk = population[start : start + int(config.batch_size)]
-                scores_np, candidates = evaluator(chunk, target, float(config.acceptance_mse_threshold))
+                scores_np, candidates = evaluator(chunk, target, float(config.acceptance_floor_mse))
                 score_chunks.append(scores_np)
                 total_evaluated += len(chunk)
                 for candidate in candidates:
                     key = tuple(candidate.structure_tokens)
-                    if key in seen:
-                        duplicate_accepted += 1
-                        continue
-                    seen.add(key)
-                    accepted.append(
-                        replace(
-                            candidate,
-                            ga_seed=restart_seed,
-                            ga_restart_index=restart_index,
-                            ga_generation=generation,
-                        )
+                    candidate = replace(
+                        candidate,
+                        ga_seed=restart_seed,
+                        ga_restart_index=restart_index,
+                        ga_generation=generation,
                     )
-                    generation_new += 1
-                    if len(accepted) >= int(config.max_accepted):
-                        return GASearchResult(
-                            accepted=accepted,
-                            target_id=target.target_id,
-                            layer_count=len(target.seed_tokens),
-                            total_evaluated=total_evaluated,
-                            duplicate_accepted=duplicate_accepted,
-                            restarts_used=restarts_used,
-                            shortfall=0,
-                        )
+                    existing = accepted_map.get(key)
+                    if existing is not None:
+                        duplicate_accepted += 1
+                        if float(candidate.target_mse) < float(existing.target_mse):
+                            accepted_map[key] = candidate
+                            replacement_count += 1
+                        continue
+                    if len(accepted_map) < int(config.max_samples_per_target):
+                        accepted_map[key] = candidate
+                        continue
+                    worst_key, worst_item = max(accepted_map.items(), key=lambda item: float(item[1].target_mse))
+                    if float(candidate.target_mse) < float(worst_item.target_mse):
+                        del accepted_map[worst_key]
+                        accepted_map[key] = candidate
+                        replacement_count += 1
             scores = np.concatenate(score_chunks) if score_chunks else np.empty((0,), dtype=np.float32)
             if scores.size == 0:
-                break
-            if generation_new == 0:
-                stagnant_generations += 1
-            else:
-                stagnant_generations = 0
-            if stagnant_generations >= int(config.max_stagnant_generations):
                 break
             population = _next_population(
                 population,
@@ -376,14 +393,17 @@ def run_seeded_ga_search(
                 config=config,
                 rng=rng,
             )
+            emit_progress(restart_index=restart_index, generation=generation)
 
-    shortfall = max(0, int(config.max_accepted) - len(accepted))
+    accepted = sorted(accepted_map.values(), key=lambda item: (float(item.target_mse), tuple(item.structure_tokens)))
+    shortfall = max(0, int(config.max_samples_per_target) - len(accepted))
     return GASearchResult(
         accepted=accepted,
         target_id=target.target_id,
         layer_count=len(target.seed_tokens),
         total_evaluated=total_evaluated,
         duplicate_accepted=duplicate_accepted,
+        replacement_count=replacement_count,
         restarts_used=restarts_used,
         shortfall=shortfall,
     )

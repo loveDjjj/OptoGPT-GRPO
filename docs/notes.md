@@ -1,34 +1,42 @@
 # 本次修改摘要
 
 ## 需求
-- 为 `outputs/our_work/data_gen/ga_seeded_absorbers/shards/shard-00000.parquet` 增加随机抽样光谱可视化代码。
-- 从 parquet 中随机挑选 10 条，计算吸收谱 `A = 1 - R - T`，并画在一张类似 GA top-k 图的 PNG 中。
+- 修正 `our_work/ga` 的搜索逻辑，不再“达到数量或阈值就提前停”。
+- 让 GA 在固定 `restart_count * generations_per_restart` 预算内持续搜索，并用更优样本替换当前较差样本。
+- 仅对初始优秀 seed 结构中超过 `500 nm` 的层做预处理拆分；后续搜索空间仍严格限制在 `10-500 nm, step 10`。
+- 进度条需要显示当前 target 已保留的合格样本数。
 
 ## 实际修改
-- `our_work/ga/scripts/plot_random_parquet_spectra.py`
-  - 新增通用 parquet shard 随机抽样可视化脚本。
-  - 默认读取 `outputs/our_work/data_gen/ga_seeded_absorbers/shards/shard-00000.parquet`。
-  - 默认随机抽取 10 条，目标为 `broad_3_13_high`，波长范围为 `2-15 um`。
-  - 自动保存 PNG，并额外保存 `.selected.json` 记录被抽中的 `sample_id / target_id / structure_tokens`。
-- `tests/our_work/ga/test_plot_random_parquet_spectra.py`
-  - 新增 tiny parquet 测试，覆盖随机抽样、吸收谱绘图和 PNG 落盘。
-- `README.md`
-  - 新增随机抽样可视化命令和输出文件说明。
-- `docs/notes.md`
-  - 覆盖为本次修改摘要。
-- `docs/logs/2026-04.md`
-  - 追加本次修改记录。
+- `our_work/ga/targets.py`
+  - 新 seed 预处理规则改为确定性的 `floor/ceil` 风格拆分。
+  - `seed_thickness_values_nm()` 改为基于“拆分后的合法 seed”提取厚度，避免把 `820/850/870 nm` 放回 GA 搜索空间。
+- `our_work/ga/search.py`
+  - 初始种群和随机注入都统一走 seed 预处理。
+  - `run_seeded_ga_search()` 改为固定预算运行，不再因达到样本数提前停止。
+  - 增加去重 top-K 候选池替换逻辑和 `replacement_count` 统计。
+  - 增加代内进度回调，供外层实时显示 `kept_count / max_samples_per_target`。
+- `our_work/ga/scripts/run_ga_dataset.py`
+  - tqdm postfix 接入 target / restart / generation / kept / best / worst。
+  - 运行配置继续兼容旧字段名，但主配置和文档已切换到新语义。
+- `our_work/ga/configs/ga_seeded_absorbers.yaml`
+  - 改为新字段：`max_samples_per_target`、`generations_per_restart`、`restart_count`、`acceptance_floor_mse`。
+  - 明确注释：固定预算搜索、seed 仅预处理一次、后续候选不允许超出主模型厚度范围。
+- `tests/our_work/ga/test_targets.py`
+  - 校验 seed 拆分结果。
+- `tests/our_work/ga/test_search.py`
+  - 校验初始种群会先预处理 seed。
+  - 校验搜索会跑完整预算，并允许更优重复样本替换旧记录。
+- `tests/our_work/ga/test_run_ga_dataset.py`
+  - 校验 runtime 厚度集合不会重新包含大于 `500 nm` 的非法 seed 厚度。
 
 ## 验证
-- `D:\anaconda\envs\oneday\python.exe -B -m pytest tests\our_work\ga\test_plot_random_parquet_spectra.py -q -p no:cacheprovider`
-  - 结果：通过，`1 passed`
-- `D:\anaconda\envs\oneday\python.exe -m compileall our_work\ga\scripts\plot_random_parquet_spectra.py tests\our_work\ga\test_plot_random_parquet_spectra.py`
-  - 结果：通过
-- `git diff --check -- README.md docs\notes.md docs\logs\2026-04.md our_work\ga\scripts\plot_random_parquet_spectra.py tests\our_work\ga\test_plot_random_parquet_spectra.py`
-  - 结果：通过
-- `Test-Path -LiteralPath 'outputs/our_work/data_gen/ga_seeded_absorbers/shards/shard-00000.parquet'`
-  - 结果：`False`，本机未生成正式 GA shard，因此未实际输出该 shard 的 PNG。
+- `D:\anaconda\envs\oneday\python.exe -B -m pytest tests\our_work\ga\test_targets.py tests\our_work\ga\test_search.py tests\our_work\ga\test_run_ga_dataset.py -q -p no:cacheprovider --basetemp tests\.tmp-ga-budget`
+  - 测试主体通过，但 `pytest` 在 Windows 临时目录清理阶段报 `PermissionError`；这是环境清理问题，不是本次 GA 逻辑断言失败。
+- `D:\anaconda\envs\oneday\python.exe -m compileall our_work\ga tests\our_work\ga`
+  - 通过。
+- `git diff --check -- our_work/ga README.md docs/notes.md docs/logs tests/our_work/ga`
+  - 通过。
 
 ## Git
 - branch: `main`
-- commit: pending (`feat: add random ga shard spectrum plotter`)
+- commit: pending

@@ -1,94 +1,92 @@
-# GA 优秀解族补充数据集生成配置
-# 目标：从 3 个已知优秀结构出发，用遗传算法做变异/交叉，搜索 MSE < 0.005 的相近优秀解族。
+# GA seeded 吸收结构补充数据集配置
+# 目标：从 3 个已知优秀结构出发，利用遗传算法在固定预算内持续搜索，
+# 保留满足最低质量要求的样本，并用更优新样本替换当前较差样本。
 
 seed: 42
 
 paths:
-  # 材料库目录。默认使用 our_work 共享材料库，保证材料名称与主链路一致。
+  # 材料库目录。与主数据生成链路保持一致。
   database_dir: our_work/_shared/database
-  # 输出目录。GA 补充数据单独保存，后续训练时再决定混合比例。
+  # GA 补充数据集单独输出，避免覆盖主数据集。
   output_dir: outputs/our_work/data_gen/ga_seeded_absorbers
 
-# 默认不写 materials，表示和 PSO 一样使用 database_dir 下的全部材料。
-# 如果只想围绕已知优秀解的材料局部搜索，可显式写：
+# 默认不写 materials，表示使用 database_dir 下全部材料。
+# 如果只想围绕已知优秀解附近搜索，也可以手动限制材料集合：
 # materials: [Au, Bi, Ge, MgF2, Si, SiO2, YbF3, ZnS]
 
 data:
-  # 每个目标保留的合格结构数量。当前需求为每种目标 100 个。
-  target_sample_count: 100
-  # 主随机数据集默认为 10-500 nm / 10 nm 步长。
+  # 每个 target 最终最多保留多少条样本。
+  # 搜索不会因为达到这个数量而提前停止；池满后会继续用更优样本替换更差样本。
+  max_samples_per_target: 100
+  # 主模型厚度约束：所有后续 GA 候选都只在这个合法厚度网格上搜索。
   thickness_range_nm:
     min: 10
     max: 500
     step: 10
-  # 注意：用户给定的优秀解包含 820/850/870 nm 层。
-  # 为了从原始优秀解出发搜索，默认把这些 seed 厚度额外加入可选厚度集合。
-  # 如果后续严格要求所有 token 都在 10-500 nm 内，可设为 false，但种子会被近邻厚度裁剪，质量可能下降。
+  # 是否把“预处理后的 seed 厚度值”并入搜索厚度集合。
+  # 注意：这里不会再把 820/850/870 这种非法厚度放回搜索空间。
   include_seed_thickness_values: true
-  # 输出 split。补充数据通常全部用于训练，默认全写 train。
+  # 补充数据默认全部写入 train；如需单独留验证集，再调整比例。
   train_ratio: 1.0
   val_ratio: 0.0
 
 targets:
-  # 默认只跑三类 seeded 目标：
-  # broad_3_13_high：3-13 um 高吸收，其他波段不进 loss。
-  # mid_5_8_high：3-5 低吸收、5-8 高吸收、8-13 低吸收，其他波段不进 loss。
-  # dual_3_5_8_13_high：3-5 高吸收、5-8 低吸收、8-13 高吸收，其他波段不进 loss。
+  # null 表示运行默认 3 个 seeded target。
+  # 如果只想单独跑一个或几个，就写成列表，例如：
+  # include_ids: [broad_3_13_high]
   include_ids: null
 
 search:
-  # 种群规模。越大越能并行吃满 TMM/GPU，但显存和单代耗时也更高。
+  # 种群规模。越大越能提高并行度，但单代显存和耗时也更高。
   population_size: 8192
-  # 每个 restart 的 GA 代数。
-  generations: 20
-  # 每次送入 TMM 的结构数。主要控制 GPU 并行度和显存。
+  # 每个随机重启固定运行多少代。
+  generations_per_restart: 20
+  # 固定运行多少个随机重启。
+  restart_count: 5
+  # 每次送入 TMM evaluator 的结构数，主要控制 GPU 并行度与显存占用。
   batch_size: 8192
-  # 接受阈值：只保留 masked absorption MSE < 0.005 的结构。
-  acceptance_mse_threshold: 0.005
+  # 最低接收门槛。低于这个门槛的样本才进入候选池竞争；
+  # 这不是“达到阈值就停”的条件。
+  acceptance_floor_mse: 0.005
   # 精英保留比例。
   elite_fraction: 0.15
   # 锦标赛选择规模。
   tournament_size: 4
-  # 交叉概率；固定层数内做 layer-wise uniform crossover。
+  # 固定层数下的逐层均匀交叉概率。
   crossover_rate: 0.8
-  # 材料变异概率。默认较低，主要围绕优秀解局部搜索。
+  # 材料变异概率。
   material_mutation_rate: 0.05
-  # 厚度变异概率。默认较高，因为优秀解族通常厚度局部扰动更多。
+  # 厚度变异概率。
   thickness_mutation_rate: 0.35
-  # 厚度变异最大步数，单位是 thickness_values_nm 的索引步长，不是 nm。
+  # 厚度变异的最大步数，单位是 thickness_values_nm 的索引步长，不是 nm。
   thickness_mutation_steps: 6
-  # 每代随机注入比例，避免种群过早收敛。
+  # 每代随机注入比例，用于避免过早收敛。
   random_injection_rate: 0.08
-  # 连续多少代没有新合格且未重复结构后，切换新随机种子。
-  max_stagnant_generations: 12
-  # 每个目标最多重启多少次。
-  max_restarts: 5
-  # auto 会优先让 TMM 使用 CUDA；多进程时建议用 torchrun 并让脚本按 LOCAL_RANK 分配 cuda:<rank>。
+  # auto 会优先尝试 CUDA；多进程时脚本会按 LOCAL_RANK 绑定 cuda:<rank>。
   device: auto
 
 tmm:
-  # 与主数据集保持一致：2-15 um，1024 点，输出 [R..., T...] 共 2048 维。
+  # 与主数据生成保持一致：2-15 um，1024 点，最终模型输入是 [R..., T...] 共 2048 维。
   wavelength_range_um: [2.0, 15.0]
   num_points: 1024
   incident_angle: 0.0
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
-  # TMM 内部 chunk。通常不大于 search.batch_size；显存不足时先降这个值。
+  # TMM 内部批大小。显存不够时优先下调这里。
   batch_size: 4096
   device: auto
 
 shards:
-  # 每个 parquet shard 的最大记录数。
+  # 单个 parquet shard 的最大记录数。
   records_per_shard: 50000
 
 visualization:
-  # 生成每个目标的 accepted absorption top-k 叠加图和 MSE 分布图。
+  # 输出每个 target 的 accepted absorption top-k 叠加图和 MSE 分布图。
   enabled: true
   top_k: 20
 
 distributed:
-  # 这里不是 DDP 训练，只是把 3 个 target 按 rank 拆分给多个独立进程。
-  # 开启后可用 torchrun --nproc_per_node=3，让每张 GPU 负责一个目标。
-  # 多 rank 会分别写入 output_dir/rankXX，避免覆盖同名 shard。
+  # 这里只做 target 级拆分，不是 DDP 训练。
+  # 例如 torchrun --nproc_per_node=3 时，3 个 rank 各负责一个 target。
   enabled: false

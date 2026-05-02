@@ -32,6 +32,27 @@ SEEDED_SOLUTIONS: dict[str, list[str]] = {
 }
 
 
+def preprocess_seed_tokens(seed_tokens: list[str], *, max_thickness_nm: int = 500, step_nm: int = 10) -> list[str]:
+    if int(max_thickness_nm) <= 0:
+        raise ValueError("max_thickness_nm must be positive")
+    if int(step_nm) <= 0:
+        raise ValueError("step_nm must be positive")
+
+    processed: list[str] = []
+    pending = list(seed_tokens)
+    while pending:
+        token = pending.pop(0)
+        material, thickness_text = str(token).rsplit("_", 1)
+        thickness = int(thickness_text)
+        if thickness <= int(max_thickness_nm):
+            processed.append(f"{material}_{thickness}")
+            continue
+        lower = max(int(step_nm), int((thickness // 2) // int(step_nm)) * int(step_nm))
+        upper = max(int(step_nm), thickness - lower)
+        pending = [f"{material}_{lower}", f"{material}_{upper}", *pending]
+    return processed
+
+
 def _piecewise_profile(wavelengths_um: np.ndarray, bands: list[tuple[float, float, float]]) -> tuple[np.ndarray, np.ndarray]:
     wavelengths = np.asarray(wavelengths_um, dtype=np.float32)
     absorption = np.zeros_like(wavelengths, dtype=np.float32)
@@ -64,7 +85,7 @@ def build_default_ga_targets(wavelengths_um: np.ndarray) -> list[GATargetProfile
             family="seeded_band",
             absorption=broad_abs,
             loss_mask=broad_mask,
-            seed_tokens=list(SEEDED_SOLUTIONS["broad_3_13_high"]),
+            seed_tokens=preprocess_seed_tokens(list(SEEDED_SOLUTIONS["broad_3_13_high"])),
             description="3-13 um high absorption; wavelengths outside this band are ignored by the loss.",
         ),
         GATargetProfile(
@@ -72,7 +93,7 @@ def build_default_ga_targets(wavelengths_um: np.ndarray) -> list[GATargetProfile
             family="seeded_band",
             absorption=mid_abs,
             loss_mask=mid_mask,
-            seed_tokens=list(SEEDED_SOLUTIONS["mid_5_8_high"]),
+            seed_tokens=preprocess_seed_tokens(list(SEEDED_SOLUTIONS["mid_5_8_high"])),
             description="3-5 low, 5-8 high, 8-13 low absorption; outside bands ignored.",
         ),
         GATargetProfile(
@@ -80,7 +101,7 @@ def build_default_ga_targets(wavelengths_um: np.ndarray) -> list[GATargetProfile
             family="seeded_band",
             absorption=dual_abs,
             loss_mask=dual_mask,
-            seed_tokens=list(SEEDED_SOLUTIONS["dual_3_5_8_13_high"]),
+            seed_tokens=preprocess_seed_tokens(list(SEEDED_SOLUTIONS["dual_3_5_8_13_high"])),
             description="3-5 high, 5-8 low, 8-13 high absorption; outside bands ignored.",
         ),
     ]
@@ -97,7 +118,6 @@ def seed_material_names() -> list[str]:
 def seed_thickness_values_nm() -> list[int]:
     values: set[int] = set()
     for tokens in SEEDED_SOLUTIONS.values():
-        for token in tokens:
+        for token in preprocess_seed_tokens(list(tokens)):
             values.add(int(token.rsplit("_", 1)[1]))
     return sorted(values)
-

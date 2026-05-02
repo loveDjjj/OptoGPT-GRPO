@@ -30,7 +30,7 @@ def test_serialize_ga_structure_matches_data_gen_schema():
         _accepted(["Ge_10", "SiO2_20"]),
         sample_id="ga-0",
         token_to_id=vocab.token_to_id,
-        acceptance_mse_threshold=0.005,
+        acceptance_floor_mse=0.005,
     )
 
     assert record["sample_id"] == "ga-0"
@@ -39,6 +39,7 @@ def test_serialize_ga_structure_matches_data_gen_schema():
     assert record["thickness_nm"] == [10, 20]
     assert record["spectrum_rt"] == [0.1, 0.2, 0.7, 0.6]
     assert record["target_mse"] == 0.001
+    assert record["acceptance_floor_mse"] == 0.005
     assert record["ga_generation"] == 4
 
 
@@ -51,7 +52,7 @@ def test_write_ga_supplement_dataset_writes_shards_manifest_vocab_and_summary(tm
         token_to_id=vocab.token_to_id,
         vocab_tokens=vocab.special_tokens + [token for token in vocab.token_to_id if token not in vocab.special_tokens],
         records_per_shard=1,
-        acceptance_mse_threshold=0.005,
+        acceptance_floor_mse=0.005,
         train_ratio=1.0,
         val_ratio=0.0,
         seed=42,
