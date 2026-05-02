@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -67,7 +68,20 @@ class GASearchResult:
     shortfall: int
 
 
-Evaluator = Callable[[torch.Tensor, torch.Tensor, GATargetProfile, float], tuple[torch.Tensor, list[GAStructure]]]
+@dataclass(frozen=True)
+class GAEvaluatedCandidate:
+    numeric_key: tuple[tuple[int, ...], tuple[int, ...]]
+    material_indices: tuple[int, ...]
+    thickness_indices: tuple[int, ...]
+    reflection: np.ndarray
+    transmission: np.ndarray
+    target_mse: float
+
+
+Evaluator = Callable[
+    [torch.Tensor, torch.Tensor, GATargetProfile, float, int | None],
+    tuple[torch.Tensor, list[GAEvaluatedCandidate]],
+]
 ProgressCallback = Callable[[dict[str, int | float | str]], None]
 
 
@@ -145,6 +159,42 @@ def tensor_population_to_token_groups(
         [f"{material_names[int(material)]}_{int(thickness_values_nm[int(thickness)])}" for material, thickness in zip(material_row, thickness_row)]
         for material_row, thickness_row in zip(material_rows, thickness_rows)
     ]
+
+
+def build_numeric_structure_keys(
+    material_idx: torch.Tensor,
+    thickness_idx: torch.Tensor,
+) -> list[tuple[tuple[int, ...], tuple[int, ...]]]:
+    material_rows = material_idx.detach().cpu().tolist()
+    thickness_rows = thickness_idx.detach().cpu().tolist()
+    return [
+        (
+            tuple(int(value) for value in material_row),
+            tuple(int(value) for value in thickness_row),
+        )
+        for material_row, thickness_row in zip(material_rows, thickness_rows)
+    ]
+
+
+def unique_population_rows(
+    material_idx: torch.Tensor,
+    thickness_idx: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if material_idx.ndim != 2 or thickness_idx.ndim != 2 or material_idx.shape != thickness_idx.shape:
+        raise ValueError("material_idx and thickness_idx must have the same 2D shape")
+    if material_idx.shape[0] == 0:
+        empty_idx = torch.empty((0,), dtype=torch.long, device=material_idx.device)
+        return material_idx, thickness_idx, empty_idx
+
+    combined = torch.cat([material_idx, thickness_idx], dim=1)
+    unique_rows, inverse = torch.unique(combined, dim=0, sorted=False, return_inverse=True)
+    row_indices = torch.arange(combined.shape[0], device=combined.device, dtype=torch.long)
+    first_indices = torch.full((unique_rows.shape[0],), combined.shape[0], dtype=torch.long, device=combined.device)
+    first_indices.scatter_reduce_(0, inverse, row_indices, reduce="amin", include_self=True)
+    keep_indices = torch.sort(first_indices).values
+    unique_rows = combined[keep_indices]
+    layer_count = material_idx.shape[1]
+    return unique_rows[:, :layer_count], unique_rows[:, layer_count:], keep_indices
 
 
 def build_initial_population_tensors(
@@ -254,10 +304,11 @@ def evaluate_population_tensors_with_tmm(
     thickness_values_nm: list[int],
     tmm_config: TMMEvaluationConfig,
     acceptance_floor_mse: float,
+    candidate_limit: int | None = None,
     material_bank_t: torch.Tensor | None = None,
     wavelengths_tensor: torch.Tensor | None = None,
     k_tensor: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, list[GAStructure]]:
+) -> tuple[torch.Tensor, list[GAEvaluatedCandidate]]:
     thickness_values_t = torch.tensor(thickness_values_nm, dtype=torch.float32, device=material_idx.device)
     thickness_nm = thickness_values_t[thickness_idx]
     _, reflection_t, transmission_t = calculate_optical_properties_indexed_batch_torch(
@@ -288,29 +339,37 @@ def evaluate_population_tensors_with_tmm(
     scores = torch.where(ok_mask, scores, torch.full_like(scores, -float("inf")))
 
     accepted_indices = torch.nonzero(ok_mask & (losses < float(acceptance_floor_mse)), as_tuple=False).reshape(-1)
-    accepted: list[GAStructure] = []
+    if candidate_limit is not None and int(candidate_limit) > 0 and int(accepted_indices.numel()) > int(candidate_limit):
+        candidate_losses = losses[accepted_indices]
+        best_positions = torch.topk(candidate_losses, k=int(candidate_limit), largest=False).indices
+        accepted_indices = accepted_indices[best_positions]
+
+    accepted: list[GAEvaluatedCandidate] = []
     if int(accepted_indices.numel()) > 0:
-        token_groups = tensor_population_to_token_groups(
-            material_idx[accepted_indices],
-            thickness_idx[accepted_indices],
-            material_names=material_names,
-            thickness_values_nm=thickness_values_nm,
-        )
+        accepted_material_idx = material_idx[accepted_indices]
+        accepted_thickness_idx = thickness_idx[accepted_indices]
+        numeric_keys = build_numeric_structure_keys(accepted_material_idx, accepted_thickness_idx)
+        material_rows = accepted_material_idx.detach().cpu().tolist()
+        thickness_rows = accepted_thickness_idx.detach().cpu().tolist()
         reflection_np = reflection_f[accepted_indices].detach().cpu().numpy()
         transmission_np = transmission_f[accepted_indices].detach().cpu().numpy()
         losses_np = losses[accepted_indices].detach().cpu().numpy()
-        for tokens, reflection, transmission, loss in zip(token_groups, reflection_np, transmission_np, losses_np):
+        for numeric_key, material_row, thickness_row, reflection, transmission, loss in zip(
+            numeric_keys,
+            material_rows,
+            thickness_rows,
+            reflection_np,
+            transmission_np,
+            losses_np,
+        ):
             accepted.append(
-                GAStructure(
-                    structure_tokens=list(tokens),
+                GAEvaluatedCandidate(
+                    numeric_key=numeric_key,
+                    material_indices=tuple(int(value) for value in material_row),
+                    thickness_indices=tuple(int(value) for value in thickness_row),
                     reflection=np.asarray(reflection, dtype=np.float32),
                     transmission=np.asarray(transmission, dtype=np.float32),
                     target_mse=float(loss),
-                    target_id=target.target_id,
-                    target_family=target.family,
-                    ga_seed=0,
-                    ga_restart_index=0,
-                    ga_generation=0,
                 )
             )
 
@@ -330,7 +389,8 @@ def make_tmm_evaluator(
         thickness_idx: torch.Tensor,
         target: GATargetProfile,
         threshold: float,
-    ) -> tuple[torch.Tensor, list[GAStructure]]:
+        candidate_limit: int | None = None,
+    ) -> tuple[torch.Tensor, list[GAEvaluatedCandidate]]:
         if "material_bank_t" not in cache:
             complex_dtype = torch.complex128 if str(tmm_config.complex_dtype).strip().lower() in {"complex128", "torch.complex128", "c128"} else torch.complex64
             real_dtype = torch.float64 if complex_dtype == torch.complex128 else torch.float32
@@ -360,6 +420,7 @@ def make_tmm_evaluator(
             thickness_values_nm=thickness_values_nm,
             tmm_config=tmm_config,
             acceptance_floor_mse=threshold,
+            candidate_limit=candidate_limit,
             material_bank_t=cache["material_bank_t"],
             wavelengths_tensor=cache["wavelengths_tensor"],
             k_tensor=cache["k_tensor"],
@@ -468,6 +529,37 @@ def _next_population_tensors(
     return torch.cat([elite_material, child_material], dim=0), torch.cat([elite_thickness, child_thickness], dim=0)
 
 
+def _candidate_limit_when_pool_full(max_samples_per_target: int) -> int:
+    return max(16, min(256, int(max_samples_per_target)))
+
+
+def _materialize_candidate_structure(
+    candidate: GAEvaluatedCandidate,
+    *,
+    material_names: list[str],
+    thickness_values_nm: list[int],
+    target: GATargetProfile,
+    restart_seed: int,
+    restart_index: int,
+    generation: int,
+) -> GAStructure:
+    structure_tokens = [
+        f"{material_names[int(material)]}_{int(thickness_values_nm[int(thickness)])}"
+        for material, thickness in zip(candidate.material_indices, candidate.thickness_indices)
+    ]
+    return GAStructure(
+        structure_tokens=structure_tokens,
+        reflection=np.asarray(candidate.reflection, dtype=np.float32),
+        transmission=np.asarray(candidate.transmission, dtype=np.float32),
+        target_mse=float(candidate.target_mse),
+        target_id=target.target_id,
+        target_family=target.family,
+        ga_seed=int(restart_seed),
+        ga_restart_index=int(restart_index),
+        ga_generation=int(generation),
+    )
+
+
 def run_seeded_ga_search(
     *,
     target: GATargetProfile,
@@ -485,11 +577,22 @@ def run_seeded_ga_search(
         raise ValueError("max_samples_per_target must be positive")
 
     device = _resolve_device(config.device)
-    accepted_map: dict[tuple[str, ...], GAStructure] = {}
+    accepted_map: dict[tuple[tuple[int, ...], tuple[int, ...]], GAStructure] = {}
+    worst_heap: list[tuple[float, tuple[tuple[int, ...], tuple[int, ...]]]] = []
     duplicate_accepted = 0
     replacement_count = 0
     total_evaluated = 0
     restarts_used = 0
+
+    def current_worst_entry() -> tuple[tuple[tuple[int, ...], tuple[int, ...]] | None, GAStructure | None]:
+        while worst_heap:
+            neg_mse, key = worst_heap[0]
+            item = accepted_map.get(key)
+            if item is None or not np.isclose(float(item.target_mse), -float(neg_mse)):
+                heapq.heappop(worst_heap)
+                continue
+            return key, item
+        return None, None
 
     def emit_progress(*, restart_index: int, generation: int) -> None:
         if progress_callback is None:
@@ -544,31 +647,66 @@ def run_seeded_ga_search(
                 end = min(start + int(config.batch_size), int(config.population_size))
                 chunk_material_idx = material_idx[start:end]
                 chunk_thickness_idx = thickness_idx[start:end]
-                scores_t, candidates = evaluator(chunk_material_idx, chunk_thickness_idx, target, float(config.acceptance_floor_mse))
+                chunk_material_idx, chunk_thickness_idx, _ = unique_population_rows(chunk_material_idx, chunk_thickness_idx)
+                cutoff = float(config.acceptance_floor_mse)
+                candidate_limit = None
+                if len(accepted_map) >= int(config.max_samples_per_target):
+                    _, worst_item = current_worst_entry()
+                    if worst_item is not None:
+                        cutoff = min(cutoff, float(worst_item.target_mse))
+                    candidate_limit = _candidate_limit_when_pool_full(int(config.max_samples_per_target))
+                scores_t, candidates = evaluator(
+                    chunk_material_idx,
+                    chunk_thickness_idx,
+                    target,
+                    cutoff,
+                    candidate_limit,
+                )
                 score_chunks.append(scores_t)
                 total_evaluated += int(chunk_material_idx.shape[0])
                 for candidate in candidates:
-                    key = tuple(candidate.structure_tokens)
-                    candidate = replace(
-                        candidate,
-                        ga_seed=restart_seed,
-                        ga_restart_index=restart_index,
-                        ga_generation=generation,
-                    )
+                    key = candidate.numeric_key
                     existing = accepted_map.get(key)
                     if existing is not None:
                         duplicate_accepted += 1
                         if float(candidate.target_mse) < float(existing.target_mse):
-                            accepted_map[key] = candidate
+                            accepted_map[key] = _materialize_candidate_structure(
+                                candidate,
+                                material_names=material_names,
+                                thickness_values_nm=thickness_values_nm,
+                                target=target,
+                                restart_seed=restart_seed,
+                                restart_index=restart_index,
+                                generation=generation,
+                            )
+                            heapq.heappush(worst_heap, (-float(candidate.target_mse), key))
                             replacement_count += 1
                         continue
                     if len(accepted_map) < int(config.max_samples_per_target):
-                        accepted_map[key] = candidate
+                        accepted_map[key] = _materialize_candidate_structure(
+                            candidate,
+                            material_names=material_names,
+                            thickness_values_nm=thickness_values_nm,
+                            target=target,
+                            restart_seed=restart_seed,
+                            restart_index=restart_index,
+                            generation=generation,
+                        )
+                        heapq.heappush(worst_heap, (-float(candidate.target_mse), key))
                         continue
-                    worst_key, worst_item = max(accepted_map.items(), key=lambda item: float(item[1].target_mse))
-                    if float(candidate.target_mse) < float(worst_item.target_mse):
+                    worst_key, worst_item = current_worst_entry()
+                    if worst_key is not None and worst_item is not None and float(candidate.target_mse) < float(worst_item.target_mse):
                         del accepted_map[worst_key]
-                        accepted_map[key] = candidate
+                        accepted_map[key] = _materialize_candidate_structure(
+                            candidate,
+                            material_names=material_names,
+                            thickness_values_nm=thickness_values_nm,
+                            target=target,
+                            restart_seed=restart_seed,
+                            restart_index=restart_index,
+                            generation=generation,
+                        )
+                        heapq.heappush(worst_heap, (-float(candidate.target_mse), key))
                         replacement_count += 1
             scores = torch.cat(score_chunks, dim=0) if score_chunks else torch.empty((0,), dtype=torch.float32, device=device)
             if int(scores.numel()) == 0:
