@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
+import torch.distributed as dist
 
 from our_work._shared.io.config import resolve_repo_path
 from our_work.data_gen.pipeline.simulator import flatten_rt_spectrum, simulate_structure_batch
-from our_work.eval.dataset import sample_split_records
+from our_work.eval.dataset import sample_records_from_shards, select_split_shard_paths
 from our_work.eval.metrics import build_overall_summary, select_plot_rows, summarize_rows
 from our_work.eval.plots import (
     save_layer_metric_plot,
@@ -20,6 +22,47 @@ from our_work.eval.reports import create_eval_run_dir, write_config_snapshot, wr
 from our_work.pretrain.dataset.tokenizer import SpectralStructureTokenizer
 from our_work.pretrain.model.generation import generate_structure_tokens
 from our_work.pretrain.model.modeling_spectral_gpt import SpectralGPTForCausalLM
+
+
+def _is_distributed() -> bool:
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1
+
+
+def _init_distributed_if_needed() -> tuple[int, int]:
+    if not _is_distributed():
+        return 0, 1
+    if not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend)
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    return rank, world_size
+
+
+def _cleanup_distributed_if_needed(world_size: int) -> None:
+    if world_size > 1 and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
+
+
+def _rank_split_shards(shard_paths: list[Path], rank: int, world_size: int) -> list[Path]:
+    if world_size <= 1:
+        return shard_paths
+    return [path for index, path in enumerate(shard_paths) if index % world_size == rank]
+
+
+def _gather_rows(rows: list[dict], rank: int, world_size: int) -> list[dict]:
+    if world_size <= 1:
+        return rows
+    payload = [None for _ in range(world_size)] if rank == 0 else None
+    dist.gather_object(rows, payload, dst=0)
+    if rank != 0:
+        return []
+    merged: list[dict] = []
+    for part in payload or []:
+        if part:
+            merged.extend(part)
+    return merged
 
 
 def resolve_checkpoint_dir(path: str | Path) -> Path:
@@ -185,6 +228,7 @@ def _json_safe(value):
 
 
 def run_eval_suite(config: dict) -> dict:
+    rank, world_size = _init_distributed_if_needed()
     checkpoint_dir = resolve_checkpoint_dir(config["paths"]["checkpoint_dir"])
     dataset_dir = resolve_repo_path(config["paths"]["dataset_dir"])
     database_dir = resolve_repo_path(config["paths"]["database_dir"])
@@ -196,10 +240,25 @@ def run_eval_suite(config: dict) -> dict:
         )
     )
 
-    model, tokenizer, device = load_eval_components(checkpoint_dir, device=config.get("inference", {}).get("device"))
+    requested_device = str(config.get("inference", {}).get("device", "auto"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0")) if world_size > 1 else 0
+    resolved_device = requested_device
+    lowered = requested_device.strip().lower()
+    if world_size > 1 and torch.cuda.is_available() and (lowered == "auto" or lowered == "cuda" or lowered.startswith("cuda:")):
+        resolved_device = f"cuda:{local_rank}"
+    model, tokenizer, device = load_eval_components(checkpoint_dir, device=resolved_device)
     num_points = resolve_num_points(model, requested_num_points=config["tmm"].get("num_points"))
-    run_dir = create_eval_run_dir(output_root, run_name=run_name)
-    write_config_snapshot(run_dir / "config.snapshot.yaml", config)
+    if rank == 0:
+        run_dir = create_eval_run_dir(output_root, run_name=run_name)
+        write_config_snapshot(run_dir / "config.snapshot.yaml", config)
+        run_dir_str = str(run_dir)
+    else:
+        run_dir_str = ""
+    if world_size > 1:
+        payload = [run_dir_str]
+        dist.broadcast_object_list(payload, src=0)
+        run_dir_str = payload[0]
+    run_dir = Path(run_dir_str)
 
     split_summaries: dict[str, dict] = {}
     selected_samples_payload: dict[str, dict] = {}
@@ -223,14 +282,27 @@ def run_eval_suite(config: dict) -> dict:
             max_shards = max_shards_cfg.get(split_name)
         else:
             max_shards = max_shards_cfg
-        records, total_count, scanned_shard_count = sample_split_records(
+        shard_paths = select_split_shard_paths(
             dataset_dir,
             split_name,
-            max_samples=max_samples,
-            seed=int(config["data"].get("seed", 42)) + split_index,
             sample_mode=sample_mode,
             max_shards=None if max_shards is None else int(max_shards),
+            seed=int(config["data"].get("seed", 42)) + split_index,
         )
+        split_shards = _rank_split_shards(shard_paths, rank=rank, world_size=world_size)
+        local_max_samples = int(max_samples // world_size) + (1 if rank < int(max_samples % world_size) else 0) if world_size > 1 else int(max_samples)
+        records, local_total_count = sample_records_from_shards(
+            split_shards,
+            max_samples=local_max_samples,
+            seed=int(config["data"].get("seed", 42)) + split_index + rank * 9973,
+        )
+        if world_size > 1:
+            local_counts = [0 for _ in range(world_size)] if rank == 0 else None
+            dist.gather_object(local_total_count, local_counts, dst=0)
+            total_count = int(sum(local_counts or [])) if rank == 0 else 0
+        else:
+            total_count = int(local_total_count)
+        scanned_shard_count = len(shard_paths)
         predicted_groups = _predict_token_groups(
             model=model,
             tokenizer=tokenizer,
@@ -239,7 +311,7 @@ def run_eval_suite(config: dict) -> dict:
             max_new_tokens=int(inference_cfg.get("max_new_tokens", 10)),
             device=device,
         )
-        rows = _evaluate_records(
+        local_rows = _evaluate_records(
             split_name=split_name,
             records=records,
             predicted_groups=predicted_groups,
@@ -253,6 +325,9 @@ def run_eval_suite(config: dict) -> dict:
             tmm_batch_size=int(tmm_cfg.get("batch_size", 512)),
             tmm_device=tmm_cfg.get("device"),
         )
+        rows = _gather_rows(local_rows, rank=rank, world_size=world_size)
+        if rank != 0:
+            continue
         summary = summarize_rows(rows)
         summary["sample_mode"] = sample_mode
         summary["sampled_count"] = len(rows)
@@ -321,6 +396,9 @@ def run_eval_suite(config: dict) -> dict:
                     )
 
     overall_summary = build_overall_summary(split_summaries)
+    if rank != 0:
+        _cleanup_distributed_if_needed(world_size)
+        return _json_safe({"run_dir": str(run_dir), "summary": {"status": "non_main_rank"}})
     if plots_cfg.get("save_split_comparison", True):
         comparison_dir = run_dir / "plots" / "comparison"
         comparison_dir.mkdir(parents=True, exist_ok=True)
@@ -369,4 +447,5 @@ def run_eval_suite(config: dict) -> dict:
         write_json(run_dir / "split_summaries.json", _json_safe(split_summaries))
     if output_cfg.get("save_selected_samples_json", True):
         write_json(run_dir / "selected_samples.json", _json_safe(selected_samples_payload))
+    _cleanup_distributed_if_needed(world_size)
     return _json_safe({"run_dir": str(run_dir), "summary": payload})

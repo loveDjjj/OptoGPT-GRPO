@@ -1,19 +1,18 @@
 ﻿# 本次修改摘要
 
 ## 需求
-- 修复逐 shard 评测脚本在服务器执行时报错：
-  - `#!/usr/bin/env` 无法识别
-  - `ModuleNotFoundError: No module named 'our_work'`
+- 将 4 卡评测脚本从“运行时生成临时 YAML”改为“固定配置文件 + 简单启动命令”。
 
 ## 实际修改
-- `our_work/pretrain/scripts/eval_each_shard.py`
-  - 新增 `PROJECT_ROOT` 注入 `sys.path`，与仓库其他入口脚本保持一致，修复 `our_work` 包导入失败。
-- `run_eval_ga_custom_checkpoint980_each_shard.sh`
-  - 以 ASCII 重新写入，避免 BOM/CRLF 导致 shebang 在 Linux 上失效。
+- 新增固定配置文件：
+  - `our_work/eval/configs/ga_custom_checkpoint980_4gpu.yaml`
+  - 包含 checkpoint、ga_custom_tasks 数据集、输出目录与评测参数。
+- 更新启动脚本：
+  - `run_eval_ga_custom_checkpoint980_each_shard.sh`
+  - 仅保留 `torchrun --nproc_per_node=4 ... --config ...`。
 
 ## 结果
-- 脚本满足 Linux shebang 解析要求。
-- 逐 shard 评测入口可在仓库根目录直接导入 `our_work` 模块执行。
+- 评测入口更清晰，配置可追踪、可复用、可版本化。
 
 ## Git
 - branch: main

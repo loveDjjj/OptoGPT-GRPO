@@ -72,26 +72,16 @@ def iter_shard_records(shard_paths: list[Path]) -> Iterator[dict]:
                 }
 
 
-def sample_split_records(
-    dataset_dir: str | Path,
-    split_name: str,
+def sample_records_from_shards(
+    shard_paths: list[Path],
     *,
     max_samples: int,
     seed: int,
-    sample_mode: str = "random",
-    max_shards: int | None = None,
-) -> tuple[list[dict], int, int]:
+) -> tuple[list[dict], int]:
     rng = random.Random(int(seed))
     target_count = max(0, int(max_samples))
     sampled: list[dict] = []
     total_count = 0
-    shard_paths = select_split_shard_paths(
-        dataset_dir,
-        split_name,
-        sample_mode=sample_mode,
-        max_shards=max_shards,
-        seed=seed,
-    )
     for row in iter_shard_records(shard_paths):
         total_count += 1
         if target_count == 0:
@@ -102,4 +92,28 @@ def sample_split_records(
         replacement_index = rng.randrange(total_count)
         if replacement_index < target_count:
             sampled[replacement_index] = row
+    return sampled, total_count
+
+
+def sample_split_records(
+    dataset_dir: str | Path,
+    split_name: str,
+    *,
+    max_samples: int,
+    seed: int,
+    sample_mode: str = "random",
+    max_shards: int | None = None,
+) -> tuple[list[dict], int, int]:
+    shard_paths = select_split_shard_paths(
+        dataset_dir,
+        split_name,
+        sample_mode=sample_mode,
+        max_shards=max_shards,
+        seed=seed,
+    )
+    sampled, total_count = sample_records_from_shards(
+        shard_paths,
+        max_samples=max_samples,
+        seed=seed,
+    )
     return sampled, total_count, len(shard_paths)
