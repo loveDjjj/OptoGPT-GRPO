@@ -2,9 +2,14 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import pyarrow.parquet as pq
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from our_work.pretrain.eval_outputs import create_eval_run_dir
 from our_work.pretrain.scripts.run_eval import (

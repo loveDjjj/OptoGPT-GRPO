@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # Evaluate checkpoint on each ga_custom_tasks shard separately with per-shard plots.
