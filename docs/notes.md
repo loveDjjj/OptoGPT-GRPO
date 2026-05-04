@@ -1,15 +1,22 @@
 ﻿# 本次修改摘要
 
 ## 需求
-- 修复 4 卡评测时 NCCL `Duplicate GPU detected` 报错。
+- 修复 4 卡评测中 `tmm.device=auto` 传入 `torch.device` 报错。
+- 为多卡评测增加可见进度条。
 
 ## 实际修改
 - `our_work/eval/pipeline.py`
-  - 在分布式初始化前，新增 `torch.cuda.set_device(local_rank)`。
-  - 确保每个 rank 在 NCCL collective 前绑定到唯一本地 GPU。
+  - 新增 `tmm.device` 解析逻辑：
+    - `auto` 在多卡时解析为 `cuda:<LOCAL_RANK>`；
+    - 单进程时解析为 `cuda` 或 `cpu`。
+  - `_evaluate_records()` 中 TMM 计算改为 chunk 级进度条 `eval:tmm:<split>`。
+  - `_predict_token_groups()` 增加 batch 级进度条 `eval:predict`。
+  - split 主循环增加 rank 级进度条 `eval:rank<rank>`。
+  - 所有进度条均在缺失 `tqdm` 时自动降级。
 
 ## 结果
-- 避免多个 rank 被 NCCL 识别到同一 CUDA 设备导致初始化失败。
+- 解决 `RuntimeError: device type at start of device string: auto`。
+- 评测可实时看到 split / 预测 / TMM 三层进度。
 
 ## Git
 - branch: main

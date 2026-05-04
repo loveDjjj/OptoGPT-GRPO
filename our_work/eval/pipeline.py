@@ -7,6 +7,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.distributed as dist
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - tqdm optional
+    tqdm = None
 
 from our_work._shared.io.config import resolve_repo_path
 from our_work.data_gen.pipeline.simulator import flatten_rt_spectrum, simulate_structure_batch
@@ -136,7 +140,13 @@ def _has_missing_material_data(predicted_tokens: list[str], database_path: str |
 
 def _predict_token_groups(*, model, tokenizer, records: list[dict], batch_size: int, max_new_tokens: int, device: torch.device) -> list[list[str]]:
     predictions: list[list[str]] = []
-    for start in range(0, len(records), max(1, int(batch_size))):
+    starts = range(0, len(records), max(1, int(batch_size)))
+    iterator = (
+        tqdm(starts, total=(len(records) + max(1, int(batch_size)) - 1) // max(1, int(batch_size)), desc="eval:predict", unit="batch", dynamic_ncols=True)
+        if tqdm is not None
+        else starts
+    )
+    for start in iterator:
         chunk = records[start : start + max(1, int(batch_size))]
         spectra = torch.from_numpy(np.asarray([row["spectrum_rt"] for row in chunk], dtype=np.float32)).to(device)
         predictions.extend(
@@ -191,9 +201,16 @@ def _evaluate_records(
             continue
         valid_buckets.setdefault(len(predicted_tokens), []).append((index, predicted_tokens))
 
+    tmm_chunks: list[list[tuple[int, list[str]]]] = []
     for _, bucket_items in sorted(valid_buckets.items()):
         for start in range(0, len(bucket_items), max(1, int(tmm_batch_size))):
-            chunk_items = bucket_items[start : start + max(1, int(tmm_batch_size))]
+            tmm_chunks.append(bucket_items[start : start + max(1, int(tmm_batch_size))])
+    tmm_iter = (
+        tqdm(tmm_chunks, total=len(tmm_chunks), desc=f"eval:tmm:{split_name}", unit="chunk", dynamic_ncols=True)
+        if tqdm is not None
+        else tmm_chunks
+    )
+    for chunk_items in tmm_iter:
             chunk_indices = [item[0] for item in chunk_items]
             chunk_groups = [item[1] for item in chunk_items]
             _, reflections, transmissions, ok_mask = simulate_structure_batch(
@@ -278,7 +295,21 @@ def run_eval_suite(config: dict) -> dict:
     plots_cfg = config["plots"]
     output_cfg = config["outputs"]
 
-    for split_index, split_name in enumerate(splits):
+    tmm_device_cfg = str(tmm_cfg.get("device", "auto")).strip().lower()
+    if tmm_device_cfg == "auto":
+        if world_size > 1 and torch.cuda.is_available():
+            resolved_tmm_device = f"cuda:{local_rank}"
+        else:
+            resolved_tmm_device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        resolved_tmm_device = str(tmm_cfg.get("device"))
+
+    split_iter = (
+        tqdm(list(enumerate(splits)), total=len(splits), desc=f"eval:rank{rank}", unit="split", dynamic_ncols=True)
+        if tqdm is not None
+        else enumerate(splits)
+    )
+    for split_index, split_name in split_iter:
         if isinstance(max_samples_cfg, dict):
             max_samples = int(max_samples_cfg.get(split_name, 0))
         else:
@@ -328,7 +359,7 @@ def run_eval_suite(config: dict) -> dict:
             tolerance=float(tmm_cfg.get("tolerance", 1.0e-3)),
             complex_dtype=str(tmm_cfg.get("complex_dtype", "complex128")),
             tmm_batch_size=int(tmm_cfg.get("batch_size", 512)),
-            tmm_device=tmm_cfg.get("device"),
+            tmm_device=resolved_tmm_device,
         )
         rows = _gather_rows(local_rows, rank=rank, world_size=world_size)
         if rank != 0:
