@@ -1,26 +1,41 @@
 data:
   dataset_dir: outputs/our_work/data_gen/v1
   vocab_path: outputs/our_work/data_gen/v1/vocab/vocab.json
-  num_workers: 8
+  num_workers: 12
   prefetch_factor: 4
   pin_memory: true
   persistent_workers: true
 
 training:
   output_dir: outputs/our_work/pretrain/a100_8gpu
-  per_device_train_batch_size: 12
-  per_device_eval_batch_size: 12
+  per_device_train_batch_size: 512
+  per_device_eval_batch_size: 512
   gradient_accumulation_steps: 2
-  num_train_epochs: 5
+  num_train_epochs: 10
   max_steps: null
-  learning_rate: 5.0e-4
+  # 跟当前 1024/6/16 默认模型保持一致，默认先用更稳的 1e-4。
+  learning_rate: 1.0e-4
+  # 大模型 4 卡训练显式用 cosine 调度，并给一个短 warmup，减少前期梯度尖峰。
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.01
+  max_grad_norm: 1.0
   bf16: true
   tf32: true
-  logging_steps: 25
-  eval_steps: 250
-  save_steps: 250
-  save_total_limit: 4
+  logging_steps: 10
+  # 4 卡正式训练不再频繁全量验证；每 5000 step 验证和保存一次。
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 3
 
 distributed:
   backend: nccl
   ddp_find_unused_parameters: false
+
+monitoring:
+  tensorboard: true
+  jsonl: true
+  csv: true
+  save_plots: true
+  plot_every_eval: true
+  flush_secs: 10
+
