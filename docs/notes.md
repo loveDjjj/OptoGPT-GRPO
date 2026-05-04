@@ -1,22 +1,22 @@
 ﻿# 本次修改摘要
 
 ## 需求
-- 修复 4 卡评测中 `tmm.device=auto` 传入 `torch.device` 报错。
-- 为多卡评测增加可见进度条。
+- 新增单脚本：读取 `our_work/ga/configs/ga_custom_tasks.yaml` 的目标光谱任务，使用 `checkpoint-980` 推理结构，做 TMM 批量回算与误差可视化分析。
 
 ## 实际修改
-- `our_work/eval/pipeline.py`
-  - 新增 `tmm.device` 解析逻辑：
-    - `auto` 在多卡时解析为 `cuda:<LOCAL_RANK>`；
-    - 单进程时解析为 `cuda` 或 `cpu`。
-  - `_evaluate_records()` 中 TMM 计算改为 chunk 级进度条 `eval:tmm:<split>`。
-  - `_predict_token_groups()` 增加 batch 级进度条 `eval:predict`。
-  - split 主循环增加 rank 级进度条 `eval:rank<rank>`。
-  - 所有进度条均在缺失 `tqdm` 时自动降级。
+- 新增 `our_work/eval/scripts/run_ga_target_inference_analysis.py`：
+  - 读取 GA custom tasks 中所有目标 band 定义（支持 include_ids 过滤）。
+  - 每个目标采样 1024 个结构（可配置），随机采样解码（temperature/top-k/top-p）。
+  - 按层数分桶后做 TMM 批量计算（chunk 批处理）。
+  - 误差定义：目标 absorption 的带掩码 MSE（只在任务 bands 内计算）。
+  - 可视化输出：
+    - 最优样本 `R/T/A` 三张曲线图（纵坐标固定 0-1）
+    - 全体有效样本误差直方图
+    - 全体有效样本排序误差曲线
+  - 同时导出 best/target 光谱数组与 per-target summary.json、overall_summary.json。
 
 ## 结果
-- 解决 `RuntimeError: device type at start of device string: auto`。
-- 评测可实时看到 split / 预测 / TMM 三层进度。
+- 可以单卡端到端完成“目标->结构推理->真实光谱回算->误差统计与可视化”的分析。
 
 ## Git
 - branch: main
