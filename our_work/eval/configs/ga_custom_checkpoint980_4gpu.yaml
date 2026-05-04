@@ -11,7 +11,7 @@ data:
   splits: [train]
   sample_mode: head_shards
   max_samples_per_split:
-    train: 0
+    train: 400000
   max_shards_per_split:
     train: 8
   seed: 42
