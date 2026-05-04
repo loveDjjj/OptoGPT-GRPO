@@ -1,18 +1,15 @@
 ﻿# 本次修改摘要
 
 ## 需求
-- 将 4 卡评测脚本从“运行时生成临时 YAML”改为“固定配置文件 + 简单启动命令”。
+- 修复 4 卡评测时 NCCL `Duplicate GPU detected` 报错。
 
 ## 实际修改
-- 新增固定配置文件：
-  - `our_work/eval/configs/ga_custom_checkpoint980_4gpu.yaml`
-  - 包含 checkpoint、ga_custom_tasks 数据集、输出目录与评测参数。
-- 更新启动脚本：
-  - `run_eval_ga_custom_checkpoint980_each_shard.sh`
-  - 仅保留 `torchrun --nproc_per_node=4 ... --config ...`。
+- `our_work/eval/pipeline.py`
+  - 在分布式初始化前，新增 `torch.cuda.set_device(local_rank)`。
+  - 确保每个 rank 在 NCCL collective 前绑定到唯一本地 GPU。
 
 ## 结果
-- 评测入口更清晰，配置可追踪、可复用、可版本化。
+- 避免多个 rank 被 NCCL 识别到同一 CUDA 设备导致初始化失败。
 
 ## Git
 - branch: main

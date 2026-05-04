@@ -31,6 +31,11 @@ def _is_distributed() -> bool:
 def _init_distributed_if_needed() -> tuple[int, int]:
     if not _is_distributed():
         return 0, 1
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if torch.cuda.is_available():
+        # NCCL requires each process to bind a unique local CUDA device
+        # before collectives are initialized.
+        torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         dist.init_process_group(backend=backend)
