@@ -7,6 +7,11 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - tqdm is optional
+    tqdm = None
+
 from .plots import save_bar_chart, save_material_heatmap, save_thickness_heatmap
 
 
@@ -17,6 +22,8 @@ def analyze_structure_distribution(
     material_names: Sequence[str],
     thickness_values_nm: Sequence[int],
     output_dir: str | Path,
+    top_material_count: int = 20,
+    max_thickness_ticks: int = 20,
 ) -> dict:
     output_dir = Path(output_dir)
     layer_count_max = 0
@@ -26,7 +33,8 @@ def analyze_structure_distribution(
     global_thickness_counts: Counter[int] = Counter()
     sample_count = 0
 
-    for batch in batches:
+    batch_iter = tqdm(batches, desc=f"structure:{scope_name}", unit="batch", dynamic_ncols=True) if tqdm is not None else batches
+    for batch in batch_iter:
         sample_ids = batch["sample_id"]
         layer_counts = batch["layer_count"]
         materials_rows = batch["materials"]
@@ -85,7 +93,7 @@ def analyze_structure_distribution(
         layer_labels=layer_labels,
         output_path=output_dir / "structure_thickness_by_layer.png",
     )
-    top_materials = [name for name, _ in global_material_counts.most_common(20)]
+    top_materials = [name for name, _ in global_material_counts.most_common(max(1, int(top_material_count)))]
     save_bar_chart(
         top_materials,
         [global_material_counts[name] for name in top_materials],
@@ -99,6 +107,7 @@ def analyze_structure_distribution(
         title=f"Thickness Distribution ({scope_name})",
         ylabel="Count",
         output_path=output_dir / "structure_thickness_global.png",
+        max_xticks=max(1, int(max_thickness_ticks)),
     )
 
     summary = {

@@ -157,6 +157,16 @@ def _load_token_list(vocab_path: str | Path) -> list[str]:
     raise ValueError(f"Unsupported vocab format: {vocab_path}")
 
 
+def resolve_checkpoint_dir(path: str | Path) -> Path:
+    path = resolve_repo_path(path, project_root=PROJECT_ROOT)
+    if (path / "config.json").exists():
+        return path
+    checkpoint_dirs = [child for child in path.iterdir() if child.is_dir() and child.name.startswith("checkpoint-")]
+    if not checkpoint_dirs:
+        raise FileNotFoundError(f"No checkpoint directory found under: {path}")
+    return max(checkpoint_dirs, key=lambda child: int(child.name.split("-")[-1]))
+
+
 def validate_record_spectrum_dim(records: list[dict], *, split_name: str, spectrum_dim: int) -> None:
     if not records:
         return
@@ -175,6 +185,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run small-scale spectral pretraining.")
     parser.add_argument("--model-config", required=True)
     parser.add_argument("--train-config", required=True)
+    parser.add_argument("--init-checkpoint-dir", default=None)
+    parser.add_argument("--dataset-dir", default=None)
+    parser.add_argument("--vocab-path", default=None)
+    parser.add_argument("--train-split", default=None)
+    parser.add_argument("--eval-split", default=None)
     args = parser.parse_args()
 
     model_config_path = resolve_repo_path(args.model_config, project_root=PROJECT_ROOT)
@@ -182,27 +197,63 @@ def main() -> None:
     model_yaml = load_yaml_config(model_config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
     train_yaml = load_yaml_config(train_config_path, project_root=PROJECT_ROOT, resolve_relative_paths=True)
 
-    token_list = _load_token_list(train_yaml["data"]["vocab_path"])
-    components = build_trainer_components(
-        model_config={
-            **model_yaml["model"],
-            "vocab_size": len(token_list),
-            "pad_token_id": 0,
-            "bos_token_id": 1,
-            "eos_token_id": 2,
-        },
-        token_list=token_list,
+    dataset_dir = (
+        str(resolve_repo_path(args.dataset_dir, project_root=PROJECT_ROOT))
+        if args.dataset_dir
+        else str(train_yaml["data"]["dataset_dir"])
     )
-    train_dataset = load_split_records(train_yaml["data"]["dataset_dir"], "train")
-    eval_dataset = load_split_records(train_yaml["data"]["dataset_dir"], "val")
+    vocab_path = (
+        str(resolve_repo_path(args.vocab_path, project_root=PROJECT_ROOT))
+        if args.vocab_path
+        else str(train_yaml["data"]["vocab_path"])
+    )
+    train_split = args.train_split or str(train_yaml["data"].get("train_split", "train"))
+    eval_split = args.eval_split or str(train_yaml["data"].get("eval_split", "val"))
+    token_list = _load_token_list(vocab_path)
+
+    init_checkpoint_raw = args.init_checkpoint_dir or train_yaml["training"].get("init_checkpoint_dir")
+    init_checkpoint_dir = resolve_checkpoint_dir(init_checkpoint_raw) if init_checkpoint_raw else None
+    if init_checkpoint_dir is not None:
+        model = SpectralGPTForCausalLM.from_pretrained(init_checkpoint_dir)
+        if int(getattr(model.config, "vocab_size", len(token_list))) != int(len(token_list)):
+            raise ValueError(
+                f"vocab size mismatch: checkpoint expects {int(model.config.vocab_size)} "
+                f"but vocab file provides {int(len(token_list))} tokens"
+            )
+        config = model.config
+        tokenizer = SpectralStructureTokenizer(tokens=token_list)
+        collator = SpectralCausalCollator(
+            tokenizer=tokenizer,
+            prefix_length=int(config.prefix_length),
+        )
+        components = {
+            "tokenizer": tokenizer,
+            "config": config,
+            "model": model,
+            "collator": collator,
+        }
+    else:
+        components = build_trainer_components(
+            model_config={
+                **model_yaml["model"],
+                "vocab_size": len(token_list),
+                "pad_token_id": 0,
+                "bos_token_id": 1,
+                "eos_token_id": 2,
+            },
+            token_list=token_list,
+        )
+
+    train_dataset = load_split_records(dataset_dir, train_split)
+    eval_dataset = load_split_records(dataset_dir, eval_split)
     validate_record_spectrum_dim(
         train_dataset,
-        split_name="train",
+        split_name=train_split,
         spectrum_dim=int(components["config"].spectrum_dim),
     )
     validate_record_spectrum_dim(
         eval_dataset,
-        split_name="val",
+        split_name=eval_split,
         spectrum_dim=int(components["config"].spectrum_dim),
     )
     trainer = build_trainer(
@@ -244,7 +295,14 @@ def main() -> None:
             )
         ],
     )
-    trainer.train()
+    resume_from_checkpoint = train_yaml["training"].get("resume_from_checkpoint")
+    if isinstance(resume_from_checkpoint, str) and resume_from_checkpoint.strip():
+        resume_from_checkpoint = str(resolve_checkpoint_dir(resume_from_checkpoint))
+    elif bool(resume_from_checkpoint):
+        resume_from_checkpoint = True
+    else:
+        resume_from_checkpoint = None
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
 
 if __name__ == "__main__":

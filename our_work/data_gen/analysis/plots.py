@@ -71,12 +71,18 @@ def save_bar_chart(
     title: str,
     ylabel: str,
     output_path: str | Path,
+    max_xticks: int | None = None,
 ) -> None:
     output_path = _ensure_parent(output_path)
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(range(len(labels)), values)
-    ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=45, ha="right")
+    if max_xticks is not None and int(max_xticks) > 0 and len(labels) > int(max_xticks):
+        tick_indices = np.linspace(0, len(labels) - 1, num=int(max_xticks), dtype=int)
+        ax.set_xticks(tick_indices.tolist())
+        ax.set_xticklabels([labels[index] for index in tick_indices.tolist()], rotation=45, ha="right")
+    else:
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     fig.tight_layout()
@@ -138,30 +144,50 @@ def save_cluster_representative_plot(
     representative_spectra: np.ndarray,
     *,
     output_path: str | Path,
-) -> None:
+) -> list[str]:
     output_path = _ensure_parent(output_path)
     cluster_count = int(cluster_mean_spectra.shape[0])
+    if cluster_count <= 0:
+        return []
+
     cols = 4
-    rows = max(1, int(np.ceil(cluster_count / cols)))
-    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows), squeeze=False, sharex=True, sharey=True)
+    max_clusters_per_figure = 16
     half = cluster_mean_spectra.shape[1] // 2
-    for cluster_index in range(rows * cols):
-        axis = axes[cluster_index // cols][cluster_index % cols]
-        if cluster_index >= cluster_count:
-            axis.axis("off")
-            continue
-        mean_r = cluster_mean_spectra[cluster_index, :half]
-        mean_t = cluster_mean_spectra[cluster_index, half:]
-        rep_r = representative_spectra[cluster_index, :half]
-        rep_t = representative_spectra[cluster_index, half:]
-        axis.plot(wavelengths_um, mean_r, color="tab:red", label="mean R")
-        axis.plot(wavelengths_um, mean_t, color="tab:blue", label="mean T")
-        axis.plot(wavelengths_um, rep_r, color="tab:red", linestyle="--", alpha=0.6, label="rep R")
-        axis.plot(wavelengths_um, rep_t, color="tab:blue", linestyle="--", alpha=0.6, label="rep T")
-        axis.set_title(f"Cluster {cluster_index}")
-        axis.grid(alpha=0.2)
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper right")
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=220)
-    plt.close(fig)
+    artifact_names: list[str] = []
+    total_pages = int(np.ceil(cluster_count / max_clusters_per_figure))
+
+    for page_index in range(total_pages):
+        start = page_index * max_clusters_per_figure
+        end = min(cluster_count, (page_index + 1) * max_clusters_per_figure)
+        page_count = end - start
+        rows = max(1, int(np.ceil(page_count / cols)))
+        fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 3 * rows), squeeze=False, sharex=True, sharey=True)
+        for local_index in range(rows * cols):
+            axis = axes[local_index // cols][local_index % cols]
+            cluster_index = start + local_index
+            if cluster_index >= end:
+                axis.axis("off")
+                continue
+            mean_r = cluster_mean_spectra[cluster_index, :half]
+            mean_t = cluster_mean_spectra[cluster_index, half:]
+            rep_r = representative_spectra[cluster_index, :half]
+            rep_t = representative_spectra[cluster_index, half:]
+            axis.plot(wavelengths_um, mean_r, color="tab:red", label="mean R")
+            axis.plot(wavelengths_um, mean_t, color="tab:blue", label="mean T")
+            axis.plot(wavelengths_um, rep_r, color="tab:red", linestyle="--", alpha=0.6, label="rep R")
+            axis.plot(wavelengths_um, rep_t, color="tab:blue", linestyle="--", alpha=0.6, label="rep T")
+            axis.set_title(f"Cluster {cluster_index}")
+            axis.grid(alpha=0.2)
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="upper right")
+        fig.tight_layout()
+        if total_pages == 1:
+            page_path = output_path
+            artifact_name = output_path.name
+        else:
+            page_path = output_path.with_name(f"{output_path.stem}_part{page_index + 1:02d}{output_path.suffix}")
+            artifact_name = page_path.name
+        fig.savefig(page_path, dpi=220)
+        plt.close(fig)
+        artifact_names.append(artifact_name)
+    return artifact_names

@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 import numpy as np
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - tqdm is optional
+    tqdm = None
 
 _RAPIDS_IMPORT_ERROR: Exception | None = None
 try:
@@ -22,6 +26,105 @@ except Exception as exc:  # pragma: no cover - optional dependency
 
 from .io import extract_spectrum_matrix
 from .plots import save_bar_chart, save_cluster_representative_plot, save_pca_scatter, save_spectrum_mean_std_plot
+
+
+def _to_numpy(embeddings_cp: "cp.ndarray", sample_size: int, seed: int = 42) -> np.ndarray:
+    total = int(embeddings_cp.shape[0])
+    if total <= sample_size:
+        return cp.asnumpy(embeddings_cp).astype(np.float32)
+    rng = np.random.default_rng(int(seed))
+    indices = rng.choice(total, size=int(sample_size), replace=False)
+    return cp.asnumpy(embeddings_cp[cp.asarray(indices, dtype=cp.int64)]).astype(np.float32)
+
+
+def _compute_cluster_metrics(embeddings_np: np.ndarray, labels_np: np.ndarray) -> dict[str, float | None]:
+    if embeddings_np.shape[0] < 3 or np.unique(labels_np).size < 2:
+        return {"silhouette": None, "calinski_harabasz": None, "davies_bouldin": None}
+    try:
+        from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
+    except Exception:
+        return {"silhouette": None, "calinski_harabasz": None, "davies_bouldin": None}
+    return {
+        "silhouette": float(silhouette_score(embeddings_np, labels_np)),
+        "calinski_harabasz": float(calinski_harabasz_score(embeddings_np, labels_np)),
+        "davies_bouldin": float(davies_bouldin_score(embeddings_np, labels_np)),
+    }
+
+
+def _select_best_k(
+    *,
+    embeddings_cp: "cp.ndarray",
+    k_candidates: list[int],
+    cluster_iterations: int,
+    random_state: int,
+    n_init: int,
+    selection_strategy: str,
+    primary_metric: str,
+    metric_sample_size: int,
+) -> tuple[int, list[dict[str, float | int | None]], dict[str, str]]:
+    metrics_log: list[dict[str, float | int | None]] = []
+    sampled_np = _to_numpy(embeddings_cp, sample_size=max(2000, int(metric_sample_size)), seed=int(random_state))
+    if sampled_np.shape[0] < 3:
+        fallback_k = max(1, min(k_candidates))
+        return fallback_k, metrics_log, {"reason": "insufficient_samples_for_metric"}
+
+    candidate_iter = (
+        tqdm(k_candidates, desc="spectrum:auto_k", unit="k", dynamic_ncols=True)
+        if tqdm is not None
+        else k_candidates
+    )
+    for candidate in candidate_iter:
+        k = max(1, min(int(candidate), sampled_np.shape[0] - 1))
+        if k < 2:
+            continue
+        kmeans = KMeans(
+            n_clusters=int(k),
+            max_iter=int(cluster_iterations),
+            output_type="cupy",
+            random_state=int(random_state),
+            n_init=int(n_init),
+        )
+        sampled_cp = cp.asarray(sampled_np)
+        labels_cp = kmeans.fit_predict(sampled_cp)
+        labels_np = cp.asnumpy(labels_cp).astype(np.int64)
+        metrics = _compute_cluster_metrics(sampled_np, labels_np)
+        metrics_log.append({"k": int(k), **metrics})
+
+    if not metrics_log:
+        fallback_k = max(1, min(k_candidates))
+        return fallback_k, metrics_log, {"reason": "no_valid_k"}
+
+    primary = str(primary_metric).strip().lower()
+    strategy = str(selection_strategy).strip().lower()
+    valid_rows = [row for row in metrics_log if row.get(primary) is not None]
+    if not valid_rows:
+        chosen = metrics_log[0]
+        return int(chosen["k"]), metrics_log, {"reason": "primary_metric_unavailable", "primary_metric": primary}
+
+    if strategy == "single_metric":
+        reverse = primary != "davies_bouldin"
+        chosen = sorted(valid_rows, key=lambda row: float(row[primary]), reverse=reverse)[0]
+        return int(chosen["k"]), metrics_log, {"reason": "single_metric", "primary_metric": primary}
+
+    # weighted_rank: robust default across metrics with different scales.
+    def _rank(metric_name: str, descending: bool) -> dict[int, int]:
+        rows = [row for row in metrics_log if row.get(metric_name) is not None]
+        ordered = sorted(rows, key=lambda row: float(row[metric_name]), reverse=descending)
+        return {int(row["k"]): idx for idx, row in enumerate(ordered)}
+
+    sil_rank = _rank("silhouette", True)
+    ch_rank = _rank("calinski_harabasz", True)
+    db_rank = _rank("davies_bouldin", False)
+    scores: dict[int, int] = {}
+    for row in metrics_log:
+        k = int(row["k"])
+        if k in sil_rank and k in ch_rank and k in db_rank:
+            scores[k] = sil_rank[k] + ch_rank[k] + db_rank[k]
+    if not scores:
+        chosen = sorted(valid_rows, key=lambda row: float(row[primary]), reverse=(primary != "davies_bouldin"))[0]
+        return int(chosen["k"]), metrics_log, {"reason": "weighted_rank_fallback_primary", "primary_metric": primary}
+    best_k = min(scores.items(), key=lambda item: item[1])[0]
+    return int(best_k), metrics_log, {"reason": "weighted_rank"}
 
 
 def resolve_analysis_device(device: str = "auto") -> str:
@@ -75,6 +178,13 @@ def analyze_spectrum_distribution(
     cluster_fit_samples: int,
     cluster_iterations: int,
     scatter_max_points: int,
+    cluster_mode: str = "fixed_k",
+    k_candidates: list[int] | None = None,
+    selection_strategy: str = "weighted_rank",
+    primary_metric: str = "silhouette",
+    metric_sample_size: int = 15000,
+    random_state: int = 42,
+    n_init: int = 1,
     device: str = "auto",
 ) -> dict:
     output_dir = Path(output_dir)
@@ -94,8 +204,15 @@ def analyze_spectrum_distribution(
     layer_count_hist = Counter()
     fit_rows_chunks: list[cp.ndarray] = []
 
+    fit_target_count = max(int(pca_fit_samples), int(cluster_fit_samples))
+
     # Pass 1: mean/std + PCA/KMeans fit reservoir.
-    for frame in frame_factory():
+    pass1_iter = (
+        tqdm(frame_factory(), desc=f"spectrum:{scope_name}:pass1", unit="shard", dynamic_ncols=True)
+        if tqdm is not None
+        else frame_factory()
+    )
+    for frame in pass1_iter:
         if len(frame) == 0:
             continue
         spectra_cp = extract_spectrum_matrix(frame)
@@ -111,7 +228,7 @@ def analyze_spectrum_distribution(
             layer_count_hist[int(value)] += 1
         sampled_rows, _ = _sample_rows_cp(
             spectra_cp,
-            target_count=int(pca_fit_samples),
+            target_count=int(fit_target_count),
             estimated_total_rows=max(1, int(estimated_total_rows)),
         )
         if sampled_rows.shape[0] > 0:
@@ -143,13 +260,37 @@ def analyze_spectrum_distribution(
     fit_embeddings_cp = pca.fit_transform(standardized_fit_cp)
     explained_ratio = cp.asnumpy(pca.explained_variance_ratio_)
 
-    actual_cluster_count = max(1, min(int(cluster_count), int(fit_embeddings_cp.shape[0])))
+    if str(cluster_mode).strip().lower() == "auto_k":
+        candidate_values = [int(value) for value in (k_candidates or [])]
+        filtered_candidates = sorted(
+            {
+                max(2, min(int(value), int(fit_embeddings_cp.shape[0]) - 1))
+                for value in candidate_values
+                if int(value) >= 2
+            }
+        )
+        if not filtered_candidates:
+            filtered_candidates = [max(2, min(int(cluster_count), int(fit_embeddings_cp.shape[0]) - 1))]
+        actual_cluster_count, k_metrics, k_selection = _select_best_k(
+            embeddings_cp=fit_embeddings_cp,
+            k_candidates=filtered_candidates,
+            cluster_iterations=int(cluster_iterations),
+            random_state=int(random_state),
+            n_init=int(n_init),
+            selection_strategy=selection_strategy,
+            primary_metric=primary_metric,
+            metric_sample_size=int(metric_sample_size),
+        )
+    else:
+        actual_cluster_count = max(1, min(int(cluster_count), int(fit_embeddings_cp.shape[0])))
+        k_metrics = []
+        k_selection = {"reason": "fixed_k"}
     kmeans = KMeans(
         n_clusters=int(actual_cluster_count),
         max_iter=int(cluster_iterations),
         output_type="cupy",
-        random_state=42,
-        n_init=1,
+        random_state=int(random_state),
+        n_init=int(n_init),
     )
     fit_labels_cp = kmeans.fit_predict(fit_embeddings_cp)
     centers_cp = kmeans.cluster_centers_
@@ -166,7 +307,12 @@ def analyze_spectrum_distribution(
     wavelength_axis = _wavelength_axis(half, wavelength_min, wavelength_max)
 
     # Pass 2: project full dataset, assign clusters, aggregate and pick representatives.
-    for frame in frame_factory():
+    pass2_iter = (
+        tqdm(frame_factory(), desc=f"spectrum:{scope_name}:pass2", unit="shard", dynamic_ncols=True)
+        if tqdm is not None
+        else frame_factory()
+    )
+    for frame in pass2_iter:
         if len(frame) == 0:
             continue
         spectra_cp = extract_spectrum_matrix(frame)
@@ -226,7 +372,7 @@ def analyze_spectrum_distribution(
         ylabel="Count",
         output_path=output_dir / "spectrum_cluster_sizes.png",
     )
-    save_cluster_representative_plot(
+    representative_artifacts = save_cluster_representative_plot(
         wavelength_axis,
         cluster_mean_spectra.astype(np.float32),
         representative_spectra.astype(np.float32),
@@ -240,6 +386,15 @@ def analyze_spectrum_distribution(
         "engine": "rapids",
         "explained_variance_ratio": explained_ratio.tolist(),
         "cluster_count": int(actual_cluster_count),
+        "cluster_mode": str(cluster_mode),
+        "k_selection": {
+            "strategy": str(selection_strategy),
+            "primary_metric": str(primary_metric),
+            "metric_sample_size": int(metric_sample_size),
+            "details": k_selection,
+            "candidates": [int(value) for value in (k_candidates or [])],
+            "metrics": k_metrics,
+        },
         "cluster_sizes": {f"cluster_{index}": int(cluster_counts[index]) for index in range(actual_cluster_count)},
         "cluster_representatives": {
             f"cluster_{index}": {
@@ -254,7 +409,7 @@ def analyze_spectrum_distribution(
             "mean_std": "spectrum_mean_std.png",
             "pca_scatter": "spectrum_pca_scatter.png" if scatter_coords.size > 0 else None,
             "cluster_sizes": "spectrum_cluster_sizes.png",
-            "cluster_representatives": "spectrum_cluster_representatives.png",
+            "cluster_representatives": representative_artifacts,
         },
     }
     (output_dir / "spectrum_analysis.json").write_text(

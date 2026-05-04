@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - tqdm is optional
+    tqdm = None
+
 from .io import (
     count_total_rows,
     derive_materials_and_thicknesses,
@@ -36,6 +41,15 @@ def analyze_dataset(
     device: str = "auto",
     enable_structure_analysis: bool = True,
     enable_spectrum_analysis: bool = True,
+    structure_top_material_count: int = 20,
+    structure_max_thickness_ticks: int = 20,
+    cluster_mode: str = "fixed_k",
+    k_candidates: Sequence[int] | None = None,
+    selection_strategy: str = "weighted_rank",
+    primary_metric: str = "silhouette",
+    metric_sample_size: int = 15000,
+    random_state: int = 42,
+    n_init: int = 1,
 ) -> dict:
     if dataset_dir is None and not shard_paths:
         raise ValueError("Either dataset_dir or shard_paths must be provided")
@@ -58,7 +72,13 @@ def analyze_dataset(
 
     analysis_root.mkdir(parents=True, exist_ok=True)
     summaries: dict[str, dict] = {}
-    for scope_name, scope_shards in resolved_scopes.items():
+    scope_items = list(resolved_scopes.items())
+    scope_iter = (
+        tqdm(scope_items, total=len(scope_items), desc="analysis scopes", unit="scope", dynamic_ncols=True)
+        if tqdm is not None
+        else scope_items
+    )
+    for scope_name, scope_shards in scope_iter:
         scope_output_dir = analysis_root / scope_name
         scope_output_dir.mkdir(parents=True, exist_ok=True)
         scope_summary: dict[str, dict] = {}
@@ -73,6 +93,8 @@ def analyze_dataset(
                 material_names=material_names,
                 thickness_values_nm=thickness_values_nm,
                 output_dir=scope_output_dir,
+                top_material_count=int(structure_top_material_count),
+                max_thickness_ticks=int(structure_max_thickness_ticks),
             )
         if enable_spectrum_analysis:
             # Import on demand so structure-only analysis does not eagerly load
@@ -94,6 +116,13 @@ def analyze_dataset(
                 cluster_fit_samples=int(cluster_fit_samples),
                 cluster_iterations=int(cluster_iterations),
                 scatter_max_points=int(scatter_max_points),
+                cluster_mode=str(cluster_mode),
+                k_candidates=[int(value) for value in (k_candidates or [])],
+                selection_strategy=str(selection_strategy),
+                primary_metric=str(primary_metric),
+                metric_sample_size=int(metric_sample_size),
+                random_state=int(random_state),
+                n_init=int(n_init),
                 device=device,
             )
         (scope_output_dir / "analysis_summary.json").write_text(

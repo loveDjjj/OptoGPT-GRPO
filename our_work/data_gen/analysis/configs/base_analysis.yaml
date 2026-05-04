@@ -1,0 +1,72 @@
+﻿analysis:
+  # 分析阶段读取 Parquet 的批大小（用于结构统计迭代批次）。
+  # 值越大，吞吐通常越高，但内存占用也更大。
+  batch_size: 4096
+
+  structure:
+    # 是否执行结构分布分析（材料频次、厚度频次、分层热力图等）。
+    enabled: true
+    # 在 structure_material_global.png 中仅展示全局出现频次最高的前 N 种材料。
+    # 目的：避免材料种类太多时横轴拥挤不可读。
+    top_material_count: 20
+    # 在 structure_thickness_global.png 中最多显示多少个 x 轴刻度标签。
+    # 注意：这只影响显示密度，不影响统计本身。
+    max_thickness_ticks: 20
+
+  spectrum:
+    # 是否执行光谱分布分析（均值/方差、PCA、聚类、代表样本等）。
+    enabled: true
+    # 分析引擎。目前代码仅支持 rapids（cudf + cuml）。
+    engine: rapids
+    # 计算设备：
+    # - auto: 自动判断（有 CUDA 则走 GPU）
+    # - cuda / cuda:0 / cpu: 强制指定
+    device: auto
+
+    pca:
+      # PCA 主成分个数。用于把高维光谱压缩到较低维再做聚类与可视化。
+      # 不是越大越好：过大增加计算量，过小可能损失结构信息。
+      components: 8
+      # PCA 拟合样本量上限（从全量数据中按比例抽样近似得到）。
+      # 作用：控制“代表性”与“速度/显存”平衡。
+      fit_samples: 100000
+
+    clustering:
+      # 聚类算法名称。当前实现固定为 kmeans，用于保持与历史结果可比。
+      algorithm: kmeans
+      # 聚类模式：
+      # - fixed_k: 使用 fixed_k 固定簇数（等价旧行为）
+      # - auto_k: 在 k_candidates 中自动选择最佳 k
+      mode: auto_k
+      # 固定簇数模式下使用的 k。
+      fixed_k: 16
+      # 自动选 k 的候选集合。建议覆盖小/中/稍大规模，避免只看单点。
+      k_candidates: [16,24,32,40]
+      # 聚类拟合样本量上限。
+      # 当前实现会与 pca.fit_samples 取较大值，确保聚类拟合不比 PCA 样本更少。
+      fit_samples: 100000
+      # KMeans 最大迭代次数。
+      # 值越大越可能收敛到更稳定中心，但耗时更长。
+      max_iter: 20
+      # KMeans 重启次数（不同随机初始化重复跑几次，取最优）。
+      # 1 速度快；更大通常更稳但更慢。
+      n_init: 1
+      # 随机种子，保证可复现。
+      random_state: 42
+
+      selection:
+        # auto_k 的选型策略：
+        # - weighted_rank: 综合 silhouette / CH / DB 三个指标的排序
+        # - single_metric: 仅按 primary_metric 选择
+        strategy: weighted_rank
+        # single_metric 或 fallback 时优先使用的主指标。
+        primary_metric: silhouette
+        # 评估指标时使用的样本量上限（在 PCA 嵌入空间抽样）。
+        # 值越大越稳但越慢，尤其 silhouette 计算开销较高。
+        metric_sample_size: 50000
+
+    visualization:
+      # PCA 散点图最多绘制点数。
+      # 只影响图像可读性和绘图成本，不影响聚类训练结果。
+      scatter_max_points: 20000
+
