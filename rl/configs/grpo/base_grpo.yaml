@@ -1,0 +1,86 @@
+device: auto
+
+# 为 rollout 抽样和 DataLoader shuffle 提供可复现实验入口；多卡时会再叠加 rank_offset。
+seed: 42
+
+model:
+  # 默认单卡使用 base_train checkpoint；多卡请改用 a100_4gpu / a100_8gpu 对应目录。
+  checkpoint_dir: outputs/our_work/pretrain/base_train
+
+data:
+  dataset_dir: outputs/our_work/data_gen/v1
+  train_split: train
+  eval_split: val
+  max_train_samples: null
+  max_eval_samples: 256
+  # 单卡 A100 + 16 CPU 默认给 RL dataloader 8 个 worker。
+  num_workers: 8
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+
+training:
+  # 默认把每次训练写到 output_dir 下按日期时间命名的新子目录。
+  # 只有显式打开 overwrite_output_dir，才会复用该目录并清理已知生成产物。
+  output_dir: outputs/our_work/rl/base_grpo
+  overwrite_output_dir: false
+  # 单卡 A100 80G 默认每卡 batch 调到 16。
+  per_device_batch_size: 16
+  gradient_accumulation_steps: 2
+  epochs: 1
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.01
+  log_steps: 10
+  eval_steps: 50
+  save_steps: 50
+  clip_epsilon: 0.2
+  advantage_mode: zscore
+  advantage_eps: 1.0e-6
+  bf16: true
+  # 单卡默认从头跑；若要恢复训练，可填 checkpoint 目录。
+  # 恢复训练时会自动回到该 checkpoint 所属的原 run 目录继续写入。
+  resume_from_checkpoint: null
+
+rollout:
+  group_size: 4
+  decode: sample
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  max_new_tokens: 12
+  # 单卡默认 rollout batch 提到 512；多卡可参考 a100_4gpu / a100_8gpu。
+  batch_size: 512
+
+scoring:
+  batch_size: 1024
+
+reward:
+  spectrum_metric: rt_rmse
+  invalid_structure_penalty: 1.0
+  tmm:
+    database_path: _shared/database
+    wavelength_range_um: [2.0, 15.0]
+    num_points: 1024
+    incident_angle: 0.0
+    polarization: 0
+    tolerance: 0.001
+    # 单卡默认保守使用 complex128；多卡吞吐优先时可切 complex64。
+    complex_dtype: complex128
+    batch_size: 4096
+    device: auto
+
+distributed:
+  # 单卡默认不会启用 DDP，这里保留多卡参数是为了后续切换方便。
+  backend: nccl
+  timeout_minutes: 30
+
+monitoring:
+  tensorboard: true
+  jsonl: true
+  csv: true
+  save_plots: true
+  plot_every_eval: true
+  flush_secs: 10

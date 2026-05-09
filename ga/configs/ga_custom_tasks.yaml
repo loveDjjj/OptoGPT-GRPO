@@ -1,0 +1,190 @@
+# GA 自定义任务模板
+# 与 ga_seeded_absorbers.yaml 使用同一个主入口：
+# python -m ga.scripts.run_ga_dataset --config ga/configs/ga_custom_tasks.yaml
+seed: 42
+
+paths:
+  database_dir: _shared/database
+  output_dir: outputs/our_work/data_gen/ga_custom_tasks
+
+data:
+  max_samples_per_target: 50000
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
+  include_seed_thickness_values: true
+  train_ratio: 1.0
+  val_ratio: 0.0
+
+targets:
+  # 用户自定义任务列表。
+  # 规则：
+  # 1. bands 里 absorption=1 表示目标高吸收，absorption=0 表示目标低吸收。
+  # 2. 未在 bands 中声明的波段不参与 loss。
+  # 3. seed_tokens 可省略；省略后会按 random_init 随机生成合法初始结构。
+  tasks:
+    - target_id: custom_random_3_5_high_only
+      family: custom_band
+      description: 3-5 高吸收、5-8 低吸收、8-13 低吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 1.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 0.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 0.0
+      random_init:
+        min_layers: 4
+        max_layers: 10
+
+    - target_id: custom_random_8_13_high_only
+      family: custom_band
+      description: 3-5 低吸收、5-8 低吸收、8-13 高吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 0.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 0.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 1.0
+      random_init:
+        min_layers: 4
+        max_layers: 10
+
+    - target_id: custom_random_3_5_5_8_high
+      family: custom_band
+      description: 3-5 高吸收、5-8 高吸收、8-13 低吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 1.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 1.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 0.0
+      random_init:
+        min_layers: 4
+        max_layers: 10
+
+    - target_id: custom_random_5_8_8_13_high
+      family: custom_band
+      description: 3-5 低吸收、5-8 高吸收、8-13 高吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 0.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 1.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 1.0
+      random_init:
+        min_layers: 4
+        max_layers: 10
+
+    - target_id: custom_random_all_low
+      family: custom_band
+      description: 3-5 低吸收、5-8 低吸收、8-13 低吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 0.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 0.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 0.0
+      random_init:
+        min_layers: 4
+        max_layers: 10
+    
+    - target_id: broad_3_13_high
+      family: seeded_band
+      description: 3-13 um 高吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 13.0
+          absorption: 1.0
+      # 给了参考初始结构时，会先检查并拆分 >500 nm 的层，再进入 GA。
+      seed_tokens: [YbF3_870, ZnS_480, Si_280, Bi_20, Ge_130, Bi_820, Au_100]
+
+    - target_id: mid_5_8_high
+      family: seeded_band
+      description: 3-5 低吸收、5-8 高吸收、8-13 低吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 0.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 1.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 0.0
+      seed_tokens: [Si_250, SiO2_120, Ge_500, MgF2_850, Ge_110, MgF2_500, Bi_130, Au_100]
+
+    - target_id: dual_3_5_8_13_high
+      family: seeded_band
+      description: 3-5 高吸收、5-8 低吸收、8-13 高吸收；其他波段不参与损失。
+      bands:
+        - start_um: 3.0
+          end_um: 5.0
+          absorption: 1.0
+        - start_um: 5.0
+          end_um: 8.0
+          absorption: 0.0
+        - start_um: 8.0
+          end_um: 13.0
+          absorption: 1.0
+      seed_tokens: [SiO2_150, MgF2_500, Si_500, ZnS_450, Ge_490, MgF2_280, Si_320, Bi_250, Au_100]
+
+
+  # 可选。只运行 tasks 中的一部分。
+  # include_ids: [custom_random_example]
+  include_ids: null
+
+search:
+  population_size: 8192
+  generations_per_restart: 100
+  restart_count: 10
+  batch_size: 8192
+  acceptance_floor_mse: 0.1
+  elite_fraction: 0.15
+  tournament_size: 4
+  crossover_rate: 0.8
+  material_mutation_rate: 0.05
+  thickness_mutation_rate: 0.35
+  thickness_mutation_steps: 6
+  random_injection_rate: 0.08
+  device: auto
+
+tmm:
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex128
+  batch_size: 8192
+  device: auto
+
+shards:
+  records_per_shard: 50000
+
+visualization:
+  enabled: true
+  top_k: 20
+
+distributed:
+  enabled: false

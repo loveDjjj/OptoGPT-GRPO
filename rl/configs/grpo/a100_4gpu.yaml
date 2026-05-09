@@ -1,0 +1,78 @@
+device: auto
+
+# 4 卡正式训练默认固定随机种子；各 rank 会在入口里自动叠加 rank_offset。
+seed: 42
+
+model:
+  checkpoint_dir: outputs/our_work/pretrain/a100_4gpu
+
+data:
+  dataset_dir: outputs/our_work/data_gen/a100_4gpu
+  train_split: train
+  eval_split: val
+  max_train_samples: null
+  max_eval_samples: null
+  num_workers: 16
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: false
+
+training:
+  # 默认把每次 4 卡训练写到 output_dir 下按日期时间命名的新子目录。
+  # 若确实要覆盖同一目录，显式打开 overwrite_output_dir。
+  output_dir: outputs/our_work/rl/a100_4gpu
+  overwrite_output_dir: false
+  per_device_batch_size: 2048
+  gradient_accumulation_steps: 1
+  epochs: 4
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.01
+  log_steps: 100
+  eval_steps: 500
+  save_steps: 500
+  clip_epsilon: 0.2
+  advantage_mode: zscore
+  advantage_eps: 1.0e-6
+  bf16: true
+
+rollout:
+  group_size: 6
+  decode: sample
+  temperature: 1.0
+  top_k: 0
+  top_p: 1.0
+  max_new_tokens: 15
+  batch_size: 2048
+
+scoring:
+  batch_size: 4096
+
+reward:
+  spectrum_metric: rt_rmse
+  invalid_structure_penalty: 1.0
+  tmm:
+    database_path: _shared/database
+    wavelength_range_um: [2.0, 15.0]
+    num_points: 1024
+    incident_angle: 0.0
+    polarization: 0
+    tolerance: 0.001
+    complex_dtype: complex128
+    batch_size: 4096
+    device: auto
+
+distributed:
+  backend: nccl
+  timeout_minutes: 30
+
+
+monitoring:
+  tensorboard: true
+  jsonl: true
+  csv: true
+  save_plots: true
+  plot_every_eval: true
+  flush_secs: 10

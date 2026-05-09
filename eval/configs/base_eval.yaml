@@ -1,0 +1,50 @@
+experiment:
+  name: eval_suite
+
+paths:
+  checkpoint_dir: outputs/our_work/pretrain/a100_4gpu
+  dataset_dir: outputs/our_work/data_gen/a100_4gpu
+  database_dir: _shared/database
+  output_dir: outputs/our_work/eval/a100_4gpu
+
+data:
+  splits: [train, val]
+  sample_mode: head_shards
+  max_samples_per_split:
+    train: 102400
+    val: 10240
+  max_shards_per_split:
+    train: 32
+    val: 8
+  seed: 42
+
+inference:
+  device: auto
+  batch_size: 1024
+  max_new_tokens: 15
+
+tmm:
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex128
+  batch_size: 1024
+  device: auto
+
+plots:
+  enable: true
+  worst_count: 8
+  best_count: 8
+  mean_count: 8
+  save_histograms: true
+  save_split_comparison: true
+  save_sample_plots: true
+
+outputs:
+  save_jsonl: true
+  save_summary_json: true
+  save_split_summary_json: true
+  save_selected_samples_json: true
+  save_spectra_in_results: false

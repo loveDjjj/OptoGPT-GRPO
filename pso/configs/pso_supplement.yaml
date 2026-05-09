@@ -1,0 +1,85 @@
+# PSO 补充数据集生成配置
+# 目标：用粒子群算法搜索接近指定吸收谱形状的结构，并输出与 our_work/data_gen 一致的 parquet 数据集。
+
+seed: 42
+
+paths:
+  # 材料库目录。默认使用 our_work 共享材料库，保证和独立数据生成/训练链路一致。
+  database_dir: _shared/database
+  # 输出目录。补充数据不要直接写进随机数据目录，后续训练时再按比例混合。
+  output_dir: outputs/our_work/data_gen/pso_supplement
+
+data:
+  # 与主数据集保持一致：5-10 层分别搜索。
+  layer_counts: [5, 6, 7, 8, 9, 10]
+  # 与主数据集保持一致：10-500 nm，步长 10 nm。
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
+  # 输出数据集 split。补充数据通常主要用于训练，默认全部写入 train。
+  train_ratio: 1.0
+  val_ratio: 0.0
+
+targets:
+  # 固定带状目标共 4 个：
+  # broad_3_13、band_5_8、dual_3_5_8_13、notch_3_5。
+  include_fixed: true
+  # 洛伦兹窄带目标默认 2.1-14.9 um，步长 0.1 um，共 129 个。
+  include_lorentzian: true
+  # 调试时可限制目标数量，例如 2；正式运行设为 null。
+  max_targets: null
+  # 也可以只跑指定 target id；为空时使用上面的 include_* 规则。
+  include_ids: null
+  lorentzian:
+    center_min_um: 2.1
+    center_max_um: 14.9
+    center_step_um: 1
+    fwhm_um: 0.02
+
+search:
+  # PSO 粒子数。正式服务器运行可提高；显存压力主要来自粒子 batch 的 TMM 计算。
+  population_size: 8192
+  # 每个随机种子的迭代次数。
+  iterations: 20
+  # 每次并行评估的粒子数。该值越大 GPU 并行度越高，但显存占用也越高。
+  batch_size: 8192
+  # 每个 target/layer bucket 需要保留的合格结构数量。
+  max_accepted_per_target_layer: 50
+  # 接受阈值：只有 absorption MSE 小于该值的结构才写入补充数据集。
+  acceptance_mse_threshold: 0.01
+  # 如果连续这么多轮没有产生新的合格且未重复结构，就停止当前随机种子。
+  max_stagnant_iterations: 5
+  # 当前随机种子停滞后，最多换多少个随机种子重新搜索。
+  max_restarts: 5
+  # 标准 PSO 参数：惯性项、个体最优项、全局最优项。
+  inertia: 0.7
+  cognitive: 1.5
+  social: 1.5
+  # auto 会优先使用 cuda，否则使用 cpu；多进程时建议在外部用 CUDA_VISIBLE_DEVICES 控制每个进程。
+  device: auto
+
+tmm:
+  # 与主数据集保持一致：2-15 um，1024 点，最终保存 [R..., T...] 共 2048 维。
+  wavelength_range_um: [2.0, 15.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  # complex128 更稳，complex64 更快；正式大规模运行可按服务器显存和数值情况调整。
+  complex_dtype: complex128
+  # TMM 内部 chunk。通常不大于 search.batch_size；显存不足时先降这个值。
+  batch_size: 8192
+  # auto 会跟随 TMM 默认设备；也可显式写 cuda:0 或 cpu。
+  device: auto
+
+shards:
+  # 每个 parquet shard 的最大记录数。保持和主数据生成默认值一致，方便后续搬运和加载。
+  records_per_shard: 50000
+
+distributed:
+  # 这里不是 DDP 训练，只是把 target/layer work items 按 rank 拆分给多个独立进程。
+  # 使用 torchrun 或手动设置 RANK/WORLD_SIZE 时可打开。
+  # 多 rank 会分别写入 output_dir/rankXX，避免多个进程同时覆盖同名 shard。
+  # rank 间全局合并和二次去重建议后续用独立 merge 脚本处理。
+  enabled: false
