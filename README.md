@@ -1,110 +1,99 @@
 ﻿# OptoGPT Spectral GRPO
 
-## 椤圭洰瀹氫綅
-鏈」鐩綋鍓嶄繚鐣欎袱鏉′富绾匡細
+## 项目定位
+本项目当前保留两条主线：
 
-- `鍏夎氨璇勬祴`
-- `鍩轰簬鍏夎氨 reward 鐨?spectral GRPO 璁粌`
+- `光谱评测`
+- `基于光谱 reward 的 spectral GRPO 训练`
 
-鍩哄骇妯″瀷鏄?[model/optogpt.pt](/O:/Optics%20Code/OptoGPT-GRPO/model/optogpt.pt)锛屽畠鏈韩宸茬粡鏄敤 `CE/SFT` 棰勮缁冨ソ鐨?OptoGPT銆? 
-褰撳墠璁粌璺緞鍦ㄨ鍩哄骇涓婄户缁仛鍩轰簬鐩爣鍏夎氨鐨?group-relative policy optimization銆?
+基座模型是 [model/optogpt.pt](/O:/Optics%20Code/OptoGPT-GRPO/model/optogpt.pt)，它本身已经是用 `CE/SFT` 预训练好的 OptoGPT。  
+当前训练路径在该基座上继续做基于目标光谱的 group-relative policy optimization。
 
-## 褰撳墠鐩綍
-- `configs/eval/`
-  鍏夎氨璇勬祴閰嶇疆銆?
-- `configs/grpo/`
-  鍏夎氨 GRPO 璁粌閰嶇疆銆?
-- `runners/`
-  杩愯鍏ュ彛锛沗run_grpo.py` 涓哄綋鍓嶈缁冧富鍏ュ彛銆?
-- `models/optogpt/`
-  鍩哄骇妯″瀷鍔犺浇銆佺敓鎴愩€乸olicy 瀹氫箟銆乼eacher forcing / policy-aware 鎵撳垎銆乧heckpoint 瀵煎嚭銆?
-- `datasets/`
-  鍏夎氨-缁撴瀯鎴愬鏁版嵁闆嗐€佸垏鍒嗕笌鍒嗗竷寮?sampler銆?
-- `evaluators/`
-  鍏夎氨璇勬祴閫昏緫涓庢寚鏍囪仛鍚堛€?
-- `trainers/`
-  GRPO 璁粌鍣ㄣ€?
-- `losses/`
-  搴忓垪鎹熷け銆丟RPO 鐩爣涓庡厜璋辨崯澶便€?
-- `physics/`
-  鍘?`TMM/` 妯″潡鏁翠綋杩佺Щ鍚庣殑鐗╃悊璁＄畻浠ｇ爜銆?
-- `data/materials/`
-  鏉愭枡搴撱€?
-- `dataset/`
-  褰撳墠浣跨敤鐨?`Spectrum_*.npy` 涓?`Structure_*.npy`銆?
-- `core/`
-  鏃?checkpoint 鍏煎灞傦紝淇濈暀浣嗕笉鎵╁睍鏂伴€昏緫銆?
+## 当前目录
+- `_shared/`
+  共享配置、材料库、光学计算和分布式辅助。
+- `data_gen/`
+  光谱-结构数据生成、分析和旧 `.npy` 数据转换。
+- `pretrain/`
+  预训练数据集、模型定义、训练入口和独立评测入口。
+- `rl/`
+  轻量 GRPO 训练入口、策略、奖励和监控。
+- `eval/`
+  评测数据加载、推理、指标、绘图和报告。
+- `pso/`
+  PSO 补充数据集搜索和分析。
+- `ga/`
+  GA 补充数据集搜索、任务配置和可视化。
 
-## 鏁版嵁璇存槑
-褰撳墠榛樿浣跨敤锛?
+## 数据说明
+当前默认使用：
 
-- 璁粌闆嗭細
+- 训练集：
   [dataset/Spectrum_train.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_train.npy)
   [dataset/Structure_train.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_train.npy)
-- 楠岃瘉闆嗭細
+- 验证集：
   [dataset/Spectrum_test.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Spectrum_test.npy)
   [dataset/Structure_test.npy](/O:/Optics%20Code/OptoGPT-GRPO/dataset/Structure_test.npy)
 
-濡傛灉鍚庣画闇€瑕佷弗鏍煎垝鍒?`train/val/test`锛屽彲浠ワ細
+如果后续需要严格划分 `train/val/test`，可以：
 
-- 鐩存帴鏂板鐙珛 `val` 鏂囦欢
-- 鎴栧湪閰嶇疆閲屽惎鐢?`data.val_ratio`
+- 直接新增独立 `val` 文件
+- 或在配置里启用 `data.val_ratio`
 
-## 鍏ュ彛
-### 1. 鍏夎氨璇勬祴
-鍔熻兘锛?
+## 入口
+### 1. 评测套件
+功能：
 
-- 杈撳叆鐩爣鍏夎氨
-- 鐢熸垚缁撴瀯
-- 璁＄畻鐪熷疄缁撴瀯鐨勫簭鍒楁崯澶?
-- 璁＄畻鐢熸垚缁撴瀯瀵瑰簲鐨勫厜璋辨崯澶?
-- 杈撳嚭鏍锋湰绾х粨鏋滀笌姹囨€荤粺璁?
+- 读取预训练 checkpoint 与目标光谱数据集
+- 生成候选结构
+- 回算结构对应光谱
+- 输出样本级结果、汇总指标和可选图像
 
-鍛戒护锛?
-
-```bash
-python runners/run_spectrum_eval.py --config configs/eval/spectrum_eval.yaml
-```
-
-澶氬崱锛?
+命令：
 
 ```bash
-torchrun --nproc_per_node=4 runners/run_spectrum_eval.py --config configs/eval/spectrum_eval.yaml
+python eval/scripts/run_eval_suite.py --config eval/configs/base_eval.yaml
 ```
 
-### 2. 鍏夎氨 GRPO 璁粌
-鍔熻兘锛?
-
-- 瀵规瘡鏉＄洰鏍囧厜璋?rollout 閲囨牱涓€缁勭粨鏋勫€欓€?
-- 鐢ㄥ悓涓€ policy 瀹氫箟璁板綍 old logprobs
-- 鐢?TMM 璁＄畻姣忎釜鍊欓€夌粨鏋勭殑鍏夎氨 loss锛屽苟杞垚 reward
-- 鍦ㄥ悓涓€ target spectrum 鐨勭粍鍐呭仛 reward 涓績鍖?/ 鏍囧噯鍖?advantage
-- 鐢?PPO-style clipped objective 鏇存柊妯″瀷
-
-鍛戒护锛?
+多卡：
 
 ```bash
-python runners/run_grpo.py --config configs/grpo/spectral_grpo.yaml
+torchrun --nproc_per_node=4 eval/scripts/run_eval_suite.py --config eval/configs/base_eval.yaml
 ```
 
-澶氬崱锛?
+### 2. 光谱 GRPO 训练
+功能：
+
+- 对每条目标光谱 rollout 采样一组结构候选
+- 用同一 policy 定义记录 old logprobs
+- 用 TMM 计算每个候选结构的光谱 loss，并转成 reward
+- 在同一 target spectrum 的组内做 reward 中心化 / 标准化 advantage
+- 用 PPO-style clipped objective 更新模型
+
+命令：
 
 ```bash
-torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_grpo.yaml
+python rl/scripts/run_grpo.py --config rl/configs/grpo/base_grpo.yaml
 ```
 
-## 澶氬崱寤鸿
-褰撳墠妯″瀷瑙勬ā涓嶅ぇ锛屾渶鍚堥€傜殑骞惰鏂瑰紡鏄?`DDP 鏁版嵁骞惰`锛屼笉鏄ā鍨嬪苟琛屻€?
+多卡：
 
-- 寮€鍙戣皟璇曪細`1-2 鍗
-- 姝ｅ紡璁粌锛歚4 鍗閫氬父鏈€鍧囪　
-- 澶ц妯¤瘎娴嬶細`4-8 鍗閮藉彲浠?
-- 璁粌闃舵榛樿璺宠繃 `Structure_train.npy` 鍔犺浇锛岄伩鍏嶆瘡涓?rank 閲嶅鍗犵敤澶у潡涓绘満鍐呭瓨
-- rollout / scoring / TMM 閮藉敖閲忔寜澶?batch 鎵瑰鐞嗭紝浼樺厛鎻愰珮 GPU 鍒╃敤鐜囦笌鍚炲悙
-- 濡傛灉瑕侀暱鏈熻窇 `4-8 鍗锛屾洿鎺ㄨ崘 `Linux + NCCL`锛涘綋鍓?Windows 鐜浼氶€€鍥炲埌 `Gloo`
+```bash
+torchrun --nproc_per_node=4 rl/scripts/run_grpo.py --config rl/configs/grpo/a100_4gpu.yaml
+```
 
-## 杈撳嚭鐩綍
-鍏夎氨璇勬祴杈撳嚭锛?
+## 多卡建议
+当前模型规模不大，最合适的并行方式是 `DDP 数据并行`，不是模型并行。
+
+- 开发调试：`1-2 卡`
+- 正式训练：`4 卡`通常最均衡
+- 大规模评测：`4-8 卡`都可以
+- 训练阶段默认跳过 `Structure_train.npy` 加载，避免每个 rank 重复占用大块主机内存
+- rollout / scoring / TMM 都尽量按大 batch 批处理，优先提高 GPU 利用率与吞吐
+- 如果要长期跑 `4-8 卡`，更推荐 `Linux + NCCL`；当前 Windows 环境会退回到 `Gloo`
+
+## 输出目录
+光谱评测输出：
 
 - `outputs/eval/<experiment>_<timestamp>/config.snapshot.yaml`
 - `outputs/eval/<experiment>_<timestamp>/metrics/*.csv`
@@ -112,15 +101,15 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 - `outputs/eval/<experiment>_<timestamp>/plots/<split>/rankXX/*.png`
 - `outputs/eval/<experiment>_<timestamp>/plots/summary/<split>_distribution.png`
 
-鍏夎氨 GRPO 璁粌杈撳嚭锛?
+光谱 GRPO 训练输出：
 
 - `outputs/grpo/<experiment>_<timestamp>/config.snapshot.yaml`
 - `outputs/grpo/<experiment>_<timestamp>/metrics/*.csv`
 - `outputs/grpo/<experiment>_<timestamp>/checkpoints/best.pt`
 - `outputs/grpo/<experiment>_<timestamp>/checkpoints/final.pt`
 
-## 渚濊禆
-杩愯鍓嶈纭浠ヤ笅渚濊禆鍙敤锛?
+## 依赖
+运行前请确认以下依赖可用：
 
 - `python`
 - `torch`
@@ -128,27 +117,27 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 - `numpy`
 - `scipy`
 
-鍙€夛細
+可选：
 
 - `matplotlib`
 - `tqdm`
-  `pso` 鐨勮ˉ鍏呮暟鎹泦鎼滅储浼氱敤瀹冩樉绀?target/layer 绾у埆鐨勮繘搴︽潯锛涙湭瀹夎鏃朵細閫€鍖栦负鏅€氳緭鍑恒€?
+  `pso` 的补充数据集搜索会用它显示 target/layer 级别的进度条；未安装时会退化为普通输出。
 - `tensorboard`
-  `pretrain` 鐨勫疄鏃舵崯澶便€佸涔犵巼銆佹搴﹁寖鏁扮瓑鍙鍖栭粯璁ら€氳繃 TensorBoard 鏌ョ湅銆?
-  `data_gen` 鑷姩鍒嗘瀽鍜岃瘎娴嬬粯鍥鹃兘浼氱敤鍒般€?
+  `pretrain` 的实时损失、学习率、梯度范数等可视化默认通过 TensorBoard 查看。
+  `data_gen` 自动分析和评测绘图都会用到。
 
-## our_work 鏈嶅姟鍣ㄩ儴缃蹭笌杩愯
-鏈妭瀵瑰簲浠撳簱鏍圭洰褰曚笅鐨?[our_work](/O:/Optics%20Code/OptoGPT-GRPO/our_work) 鐙珛鏁版嵁鐢熸垚銆侀璁粌涓庤瘎娴嬮摼璺€傚綋鍓嶉粯璁ら厤缃凡缁忔敼鎴愭湇鍔″櫒鍙洿鎺ヨ繍琛岀殑鐗堟湰锛屼笉鍐嶄緷璧栧繀椤讳粠浠撳簱鏍圭洰褰曞惎鍔紱涓嶈繃涓轰簡鎺掓煡鏃ュ織鍜屼骇鐗╂洿鐩磋锛屼粛鐒跺缓璁厛 `cd` 鍒颁粨搴撴牴鐩綍鍐嶆墽琛屻€?
+## 服务器部署与运行
+本节对应仓库根目录下的 [data_gen](/O:/Optics%20Code/OptoGPT-GRPO/data_gen), [pretrain](/O:/Optics%20Code/OptoGPT-GRPO/pretrain), [rl](/O:/Optics%20Code/OptoGPT-GRPO/rl), [eval](/O:/Optics%20Code/OptoGPT-GRPO/eval) 独立数据生成、预训练与评测链路。当前默认配置已经改成服务器可直接运行的版本，不再依赖必须从仓库根目录启动；不过为了排查日志和产物更直观，仍然建议先 `cd` 到仓库根目录再执行。
 
-### 1. 蹇呴』鍚屾鐨勭洰褰?
-- 浠撳簱浠ｇ爜鏈韩
-  - `git clone` 鎴?`git pull` 鍗冲彲锛宍our_work/` 宸茬粡鍦ㄤ富宸ヤ綔鍖烘牴鐩綍銆?
-- `database/`
-  - 杩欐槸鏉愭枡搴擄紝褰撳墠涓嶅湪 git 涓€?
-  - 鏈嶅姟鍣ㄥ彧 `git clone` 涓嶅锛屽繀椤诲崟鐙悓姝ャ€?
+### 1. 必须同步的目录
+- 仓库代码本身
+  - `git clone` 或 `git pull` 即可，核心代码目录已经拍平到仓库根目录。
+- `_shared/database/`
+  - 这是材料库，当前随拍平后的共享目录一起维护。
+  - 服务器只 `git clone` 不够，必须单独同步。
 
-### 2. 鏈嶅姟鍣ㄤ緷璧?
-杩愯 `our_work` 閾捐矾鍓嶈纭浠ヤ笅 Python 渚濊禆鍙敤锛?
+### 2. 服务器依赖
+运行 `flat workspace` 链路前请确认以下 Python 依赖可用：
 
 - `torch`
 - `PyYAML`
@@ -162,45 +151,45 @@ torchrun --nproc_per_node=4 runners/run_grpo.py --config configs/grpo/spectral_g
 - `Pillow`
 - `tqdm`
 
-鎺ㄨ崘瀹夎绀轰緥锛?
+推荐安装示例：
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install numpy scipy pandas pyarrow openpyxl pyyaml pillow transformers safetensors tqdm
 ```
 
-瀹夎瀹屾垚鍚庡彲鎵ц锛?
+安装完成后可执行：
 
 ```bash
 python -c "import torch,yaml,pandas,scipy,numpy,PIL,transformers,tqdm; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
 torch 2.x.x cuda True
 ```
 
-### 3. 榛樿閰嶇疆涓庡叧閿害鏉?
-榛樿鏈嶅姟鍣ㄩ厤缃枃浠讹細
+### 3. 默认配置与关键约束
+默认服务器配置文件：
 
-- 鏁版嵁鐢熸垚锛歔dataset_v1.yaml](/O:/Optics%20Code/OptoGPT-GRPO/data_gen/configs/dataset_v1.yaml)
-- 鏁版嵁鐢熸垚锛? 鍗★級锛歚data_gen/configs/a100_4gpu.yaml`
-- 鏁版嵁鐢熸垚锛? 鍗★級锛歚data_gen/configs/a100_8gpu.yaml`
-- 璁粌锛歔base_train.yaml](/O:/Optics%20Code/OptoGPT-GRPO/pretrain/configs/train/base_train.yaml)
-- 璁粌锛? 鍗★級锛歚pretrain/configs/train/a100_4gpu.yaml`
-- 璁粌锛? 鍗★級锛歚pretrain/configs/train/a100_8gpu.yaml`
-- 妯″瀷锛歔base_gpt.yaml](/O:/Optics%20Code/OptoGPT-GRPO/pretrain/configs/model/base_gpt.yaml)
-- 寮哄寲瀛︿範锛堝熀纭€锛夛細`rl/configs/grpo/base_grpo.yaml`
-- 寮哄寲瀛︿範锛? 鍗★級锛歚rl/configs/grpo/a100_4gpu.yaml`
-- 寮哄寲瀛︿範锛? 鍗★級锛歚rl/configs/grpo/a100_8gpu.yaml`
-- PSO 琛ュ厖鏁版嵁闆嗭細`pso/configs/pso_supplement.yaml`
-- GA 浼樼瑙ｆ棌琛ュ厖鏁版嵁闆嗭細`ga/configs/ga_seeded_absorbers.yaml`
+- 数据生成：[dataset_v1.yaml](/O:/Optics%20Code/OptoGPT-GRPO/data_gen/configs/dataset_v1.yaml)
+- 数据生成（4 卡）：`data_gen/configs/a100_4gpu.yaml`
+- 数据生成（8 卡）：`data_gen/configs/a100_8gpu.yaml`
+- 训练：[base_train.yaml](/O:/Optics%20Code/OptoGPT-GRPO/pretrain/configs/train/base_train.yaml)
+- 训练（4 卡）：`pretrain/configs/train/a100_4gpu.yaml`
+- 训练（8 卡）：`pretrain/configs/train/a100_8gpu.yaml`
+- 模型：[base_gpt.yaml](/O:/Optics%20Code/OptoGPT-GRPO/pretrain/configs/model/base_gpt.yaml)
+- 强化学习（基础）：`rl/configs/grpo/base_grpo.yaml`
+- 强化学习（4 卡）：`rl/configs/grpo/a100_4gpu.yaml`
+- 强化学习（8 卡）：`rl/configs/grpo/a100_8gpu.yaml`
+- PSO 补充数据集：`pso/configs/pso_supplement.yaml`
+- GA 优秀解族补充数据集：`ga/configs/ga_seeded_absorbers.yaml`
 
-褰撳墠榛樿鍊硷紙鍗曞崱 A100 80G + 16 CPU锛夛細
+当前默认值（单卡 A100 80G + 16 CPU）：
 
 - `dataset_v1.yaml`
-  - `paths.database_dir: database`
+  - `paths.database_dir: _shared/database`
   - `paths.output_dir: outputs/our_work/data_gen/v1`
   - `data.layer_counts: [5, 6, 7, 8, 9, 10]`
   - `data.samples_per_bucket: 500000`
@@ -237,8 +226,8 @@ torch 2.x.x cuda True
   - `training.eval_steps: 100000`
   - `training.save_steps: 50000`
   - `monitoring.tensorboard/jsonl/csv/save_plots: true`
-  - 璇勪及璺緞浼氬厛鎶?logits 棰勫鐞嗘垚 `argmax token ids` 鍐嶅仛 metrics锛岄伩鍏嶅畬鏁存敹闆?`[batch, seq_len, vocab]` 绾у埆鐨勫ぇ寮犻噺
-  - `distributed.*` 鍙湁鍦?`torchrun --nproc_per_node=...` 鐨勭湡瀹炲鍗＄幆澧冧笅鎵嶄細鐢熸晥锛涘崟杩涚▼ `python run_pretrain.py ...` 浼氬拷鐣ヨ繖閮ㄥ垎骞舵竻鐞嗚剰鐨?DDP 鐜鍙橀噺
+  - 评估路径会先把 logits 预处理成 `argmax token ids` 再做 metrics，避免完整收集 `[batch, seq_len, vocab]` 级别的大张量
+  - `distributed.*` 只有在 `torchrun --nproc_per_node=...` 的真实多卡环境下才会生效；单进程 `python run_pretrain.py ...` 会忽略这部分并清理脏的 DDP 环境变量
 - `base_gpt.yaml`
   - `model.spectrum_dim: 2048`
   - `model.prefix_length: 8`
@@ -277,11 +266,11 @@ torch 2.x.x cuda True
   - `data.max_samples_per_target: 100`
   - `data.thickness_range_nm: {min: 10, max: 500, step: 10}`
   - `data.include_seed_thickness_values: true`
-  - `targets.tasks: 榛樿鏄惧紡鍐欏叆 3 涓?seeded 浠诲姟`
+  - `targets.tasks: 默认显式写入 3 个 seeded 任务`
   - `targets.include_ids: null`
-  - `targets.tasks[*].bands: 鍙湪澹版槑鐨勬尝娈佃绠?loss`
-  - `targets.tasks[*].seed_tokens/random_init: 鏀寔缁欏弬鑰冪粨鏋勬垨闅忔満鍒濆鍖栫粨鏋刞
-  - `ga_custom_tasks.yaml: 鐢ㄦ埛鑷畾涔変换鍔℃ā鏉縛
+  - `targets.tasks[*].bands: 只在声明的波段计算 loss`
+  - `targets.tasks[*].seed_tokens/random_init: 支持给参考结构或随机初始化结构`
+  - `ga_custom_tasks.yaml: 用户自定义任务模板`
   - `search.population_size: 8192`
   - `search.generations_per_restart: 20`
   - `search.restart_count: 5`
@@ -291,16 +280,16 @@ torch 2.x.x cuda True
   - `tmm.num_points: 1024`
   - `visualization.enabled: true`
 
-鍏抽敭绾︽潫锛?
+关键约束：
 
-- `model.spectrum_dim` 蹇呴』绛変簬 `2 * tmm.num_points`
-- 濡傛灉浣犳妸 `num_points` 鏀规垚涓嶆槸 `1024`锛屽氨蹇呴』鍚屾淇敼 `model.spectrum_dim`
-- 鐜板湪 YAML 鍐呯殑鐩稿璺緞閮戒細鑷姩鎸変粨搴撴牴鐩綍瑙ｆ瀽
+- `model.spectrum_dim` 必须等于 `2 * tmm.num_points`
+- 如果你把 `num_points` 改成不是 `1024`，就必须同步修改 `model.spectrum_dim`
+- 现在 YAML 内的相对路径都会自动按仓库根目录解析
 
-### 4. 浠庨浂寮€濮嬮儴缃蹭笌杩愯
-浠ヤ笅姝ラ鍋囪鏈嶅姟鍣ㄩ儴缃茬洰褰曚负 `/srv/OptoGPT-GRPO`锛屽苟涓旂湡瀹炴暟鎹緭鍑轰繚瀛樺湪浠撳簱鏍圭洰褰曠殑 `outputs/` 涓嬨€?
+### 4. 从零开始部署与运行
+以下步骤假设服务器部署目录为 `/srv/OptoGPT-GRPO`，并且真实数据输出保存在仓库根目录的 `outputs/` 下。
 
-#### Step 1: 鎷変唬鐮佸苟杩涘叆浠撳簱
+#### Step 1: 拉代码并进入仓库
 
 ```bash
 cd /srv
@@ -309,38 +298,38 @@ cd /srv/OptoGPT-GRPO
 git checkout main
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
 Cloning into 'OptoGPT-GRPO'...
 Already on 'main'
 ```
 
-姝ゆ椂浣犲簲鑳界湅鍒帮細
+此时你应能看到：
 
-- [our_work](/O:/Optics%20Code/OptoGPT-GRPO/our_work)
+- [data_gen](/O:/Optics%20Code/OptoGPT-GRPO/data_gen), [pretrain](/O:/Optics%20Code/OptoGPT-GRPO/pretrain), [rl](/O:/Optics%20Code/OptoGPT-GRPO/rl), [eval](/O:/Optics%20Code/OptoGPT-GRPO/eval)
 - [README.md](/O:/Optics%20Code/OptoGPT-GRPO/README.md)
 
-#### Step 2: 鍚屾鏉愭枡搴?
+#### Step 2: 同步材料库
 
-鎶婃湰鍦?`database/` 鍚屾鍒版湇鍔″櫒浠撳簱鏍圭洰褰曪紝渚嬪锛?
-
-```bash
-scp -r database user@server:/srv/OptoGPT-GRPO/
-```
-
-鍚屾瀹屾垚鍚庢湇鍔″櫒涓婂簲瀛樺湪锛?
-
-- `/srv/OptoGPT-GRPO/database/*.csv`
-- 鎴?`/srv/OptoGPT-GRPO/database/*.xlsx`
-
-浣犲彲浠ユ墽琛岋細
+把本地 `database/` 同步到服务器仓库根目录，例如：
 
 ```bash
-ls /srv/OptoGPT-GRPO/database | head
+scp -r _shared/database user@server:/srv/OptoGPT-GRPO/_shared/
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+同步完成后服务器上应存在：
+
+- `/srv/OptoGPT-GRPO/_shared/database/*.csv`
+- 或 `/srv/OptoGPT-GRPO/_shared/database/*.xlsx`
+
+你可以执行：
+
+```bash
+ls /srv/OptoGPT-GRPO/_shared/database | head
+```
+
+典型终端输出：
 
 ```text
 Ag.xlsx
@@ -350,7 +339,7 @@ SiO2.xlsx
 ...
 ```
 
-#### Step 3: 瀹夎渚濊禆
+#### Step 3: 安装依赖
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -358,29 +347,29 @@ python -m pip install --upgrade pip
 python -m pip install numpy scipy pandas pyarrow openpyxl pyyaml pillow transformers safetensors
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
 Successfully installed ...
 ```
 
-#### Step 4: 鐢熸垚鏁版嵁闆?
+#### Step 4: 生成数据集
 
-杩愯鍓嶏紝寤鸿鍏堢‘璁ゆ暟鎹敓鎴愰厤缃噷纭疄鍚敤浜嗗垎鍧楅噰鏍峰拰鍒嗗潡 TMM锛?
+运行前，建议先确认数据生成配置里确实启用了分块采样和分块 TMM：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python -c "import yaml, pathlib; cfg=yaml.safe_load(pathlib.Path('data_gen/configs/dataset_v1.yaml').read_text(encoding='utf-8')); print('sampling =', cfg['sampling']); print('tmm.batch_size =', cfg['tmm']['batch_size'])"
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
 sampling = {'device': 'auto', 'batch_size': 65536, 'max_duplicate_retry': 1000}
 tmm.batch_size = 4096
 ```
 
-榛樿閰嶇疆鐗囨濡備笅锛?
+默认配置片段如下：
 
 ```yaml
 data:
@@ -425,22 +414,22 @@ analysis:
     save_split_analysis: false
 ```
 
-璇存槑锛?
-- 榛樿鑷姩鍒嗘瀽鍙窇 `all`锛岄伩鍏嶇敓鎴愬畬鎴愬悗鍐嶆妸 `train / val / test` 閲嶅鎵竴閬嶃€?
-- 褰?`analysis.spectrum.engine: rapids` 鏃讹紝`run_build_dataset.py` 浼氬湪鐙珛瀛愯繘绋嬮噷璋冪敤 `run_analyze_dataset.py`锛岄伩鍏嶅悓涓€ Python 杩涚▼閲屾贩鐢?`torch` 鍜?RAPIDS 鐨?CUDA 杩愯鏃舵爤銆?
+说明：
+- 默认自动分析只跑 `all`，避免生成完成后再把 `train / val / test` 重复扫一遍。
+- 当 `analysis.spectrum.engine: rapids` 时，`run_build_dataset.py` 会在独立子进程里调用 `run_analyze_dataset.py`，避免同一 Python 进程里混用 `torch` 和 RAPIDS 的 CUDA 运行时栈。
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python data_gen/scripts/run_build_dataset.py --config data_gen/configs/dataset_v1.yaml
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
-data_gen buckets:  17%|鈻堚枊        | 1/6 [00:xx<00:xx, ... bucket/s, layer_count=5, bucket_kept=98304, bucket_target=500000, sample_batch=65536, tmm_batch=4096, duplicates_skipped=..., valid_kept=...]
+data_gen buckets:  17%|█▋        | 1/6 [00:xx<00:xx, ... bucket/s, layer_count=5, bucket_kept=98304, bucket_target=500000, sample_batch=65536, tmm_batch=4096, duplicates_skipped=..., valid_kept=...]
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/data_gen/v1/shards/shard-00000.parquet`
 - `outputs/our_work/data_gen/v1/splits/split_manifest.json`
@@ -452,17 +441,17 @@ data_gen buckets:  17%|鈻堚枊        | 1/6 [00:xx<00:xx, ... bucket/s, layer_
 - `outputs/our_work/data_gen/v1/analysis/all/spectrum_cluster_sizes.png`
 - `outputs/our_work/data_gen/v1/analysis/all/spectrum_cluster_representatives.png`
 
-璇存槑锛?
+说明：
 
-- 缁撴瀯鍊欓€夌幇鍦ㄦ寜 `sampling.batch_size` 鍦?GPU/CPU 涓婂垎鍧楃敓鎴愩€?
-- TMM 鍏夎氨璁＄畻鎸?`tmm.batch_size` 鍒嗘壒鎵ц锛屼笉浼氬啀鎶婃暣 bucket 涓€娆℃€ч€佽繘鏄惧瓨/鍐呭瓨銆?
-- bucket 鍐呬粛鐒朵繚鎸佸叏灞€涓ユ牸鍞竴锛涢噸澶嶇粨鏋勪細琚涪寮冨苟鑷姩琛ラ噰銆?
-- 鏁版嵁鐢熸垚缁撴潫鍚庨粯璁ゅ彧鑷姩璺?`all` 鍒嗘瀽锛沗train/val/test` 寤鸿閫氳繃鐙珛 CLI 鎸夐渶琛ヨ窇銆?
-- 褰撳墠榛樿鍙嚜鍔ㄥ垎鏋?`all`锛岄伩鍏嶅 `train/val/test` 閲嶅鎵弿瀵艰嚧鑰楁椂杩囬暱銆?
-- 鍏夎氨鍒嗘瀽浣跨敤鎷兼帴鍚庣殑 `[R..., T...]` 鍋氭爣鍑嗗寲銆丳CA 鍜岃仛绫伙紱缁撴瀯鍒嗘瀽浼氭妸鏉愭枡鍜屽帤搴︽媶寮€缁熻銆?
-- 鍏夎氨鍒嗘瀽浼樺厛璧?RAPIDS锛坄cudf + cuml`锛夛紝鎶?PCA / 鑱氱被涓昏矾寰勬斁鍦?GPU 涓娿€?
+- 结构候选现在按 `sampling.batch_size` 在 GPU/CPU 上分块生成。
+- TMM 光谱计算按 `tmm.batch_size` 分批执行，不会再把整 bucket 一次性送进显存/内存。
+- bucket 内仍然保持全局严格唯一；重复结构会被丢弃并自动补采。
+- 数据生成结束后默认只自动跑 `all` 分析；`train/val/test` 建议通过独立 CLI 按需补跑。
+- 当前默认只自动分析 `all`，避免对 `train/val/test` 重复扫描导致耗时过长。
+- 光谱分析使用拼接后的 `[R..., T...]` 做标准化、PCA 和聚类；结构分析会把材料和厚度拆开统计。
+- 光谱分析优先走 RAPIDS（`cudf + cuml`），把 PCA / 聚类主路径放在 GPU 上。
 
-浣犲彲浠ユ鏌ワ細
+你可以检查：
 
 ```bash
 ls outputs/our_work/data_gen/v1/shards | head
@@ -470,31 +459,31 @@ cat outputs/our_work/data_gen/v1/splits/split_manifest.json
 ls outputs/our_work/data_gen/v1/analysis/all
 ```
 
-濡傛灉浣犲垏鍒板鍗★紝鐩存帴浣跨敤涓撶敤閰嶇疆锛?
+如果你切到多卡，直接使用专用配置：
 
-4 鍗?A100 姝ｅ紡鍛戒护锛?
+4 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=4 data_gen/scripts/run_build_dataset.py --config data_gen/configs/a100_4gpu.yaml
 ```
 
-8 鍗?A100 姝ｅ紡鍛戒护锛?
+8 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=8 data_gen/scripts/run_build_dataset.py --config data_gen/configs/a100_8gpu.yaml
 ```
 
-璇存槑锛?
+说明：
 
-- 褰撳墠澶氬崱鏁版嵁鐢熸垚鍏堟寜 `layer bucket` 鍦?rank 涔嬮棿鍒嗛厤锛屼繚璇?bucket 鍐呭叏灞€鍞竴涓嶄細琚法 rank 鐮村潖銆?
-- `4` 鍗℃椂 6 涓?bucket 浼氬垎鍒?4 涓?rank銆?
-- `8` 鍗℃椂浼氭湁绌洪棽 rank锛岃繖鏄綋鍓嶇増鏈负浜嗕繚璇佸敮涓€鎬у拰姝ｇ‘鎬у仛鐨勪繚瀹堝疄鐜般€?
+- 当前多卡数据生成先按 `layer bucket` 在 rank 之间分配，保证 bucket 内全局唯一不会被跨 rank 破坏。
+- `4` 卡时 6 个 bucket 会分到 4 个 rank。
+- `8` 卡时会有空闲 rank，这是当前版本为了保证唯一性和正确性做的保守实现。
 
-#### Step 4.1: 鍗曠嫭杩愯鏁版嵁闆嗗垎鏋?
+#### Step 4.1: 单独运行数据集分析
 
-濡傛灉浣犲凡缁忔湁鐜版垚鏁版嵁闆嗭紝涔熷彲浠ヤ笉閲嶆柊鐢熸垚锛岀洿鎺ュ崟鐙窇鍒嗘瀽锛?
+如果你已经有现成数据集，也可以不重新生成，直接单独跑分析：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -506,13 +495,13 @@ python data_gen/scripts/run_analyze_dataset.py \
   --device auto
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
-# 鍛戒护鏈韩榛樿瀹夐潤鎵ц锛屽畬鎴愬悗浼氬湪 analysis 鐩綍涓嬪啓鍑?PNG / JSON 缁撴灉
+# 命令本身默认安静执行，完成后会在 analysis 目录下写出 PNG / JSON 结果
 ```
 
-濡傛灉鍙垎鏋愭煇浜?shard 鏂囦欢锛?
+如果只分析某些 shard 文件：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -525,7 +514,7 @@ python data_gen/scripts/run_analyze_dataset.py \
   --device cpu
 ```
 
-濡傛灉浣犺繕鎯冲崟鐙垎鏋?`train / val / test`锛岀洿鎺ユ敼 `--split` 鍗冲彲锛屼緥濡傦細
+如果你还想单独分析 `train / val / test`，直接改 `--split` 即可，例如：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -537,25 +526,25 @@ python data_gen/scripts/run_analyze_dataset.py \
   --device auto
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/data_gen/v1/analysis/analysis_manifest.json`
 - `outputs/our_work/data_gen/v1/analysis/<scope>/structure_analysis.json`
 - `outputs/our_work/data_gen/v1/analysis/<scope>/spectrum_analysis.json`
-- 瀵瑰簲 scope 涓嬬殑缁撴瀯鍒嗗竷鍜岃氨褰㈠垎鏋?PNG
+- 对应 scope 下的结构分布和谱形分析 PNG
 
-#### Step 4.2: 杞崲骞跺垎鏋愭棫 `.npy` 鏁版嵁闆?
+#### Step 4.2: 转换并分析旧 `.npy` 数据集
 
-鏃ф暟鎹泦鏂囦欢锛?
+旧数据集文件：
 
 - `dataset/Spectrum_train.npy`
 - `dataset/Spectrum_test.npy`
 - `dataset/Structure_train.npy`
 - `dataset/Structure_test.npy`
 
-涓嶈兘鐩存帴浼犵粰 `data_gen/scripts/run_analyze_dataset.py`锛岄渶瑕佸厛杞崲鎴?`data_gen` 鐨?parquet schema銆?
+不能直接传给 `data_gen/scripts/run_analyze_dataset.py`，需要先转换成 `data_gen` 的 parquet schema。
 
-杞崲鍛戒护锛?
+转换命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -569,7 +558,7 @@ python -m data_gen.scripts.convert_legacy_npy_dataset \
   --num-workers 8
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/legacy_npy_parquet/shards/train-shard-00000.parquet`
 - `outputs/legacy_npy_parquet/shards/test-shard-00000.parquet`
@@ -577,16 +566,16 @@ python -m data_gen.scripts.convert_legacy_npy_dataset \
 - `outputs/legacy_npy_parquet/vocab/vocab.json`
 - `outputs/legacy_npy_parquet/stats/summary.json`
 
-璇存槑锛?
+说明：
 
-- `Spectrum_*.npy` 浼氭寜琛屽鍒跺埌 `spectrum_rt` 瀛楁銆?
-- `Structure_*.npy` 浼氫粠 `Material_ThicknessNm` token 鎷嗗嚭 `materials` 鍜?`thickness_nm`銆?
-- 鏃ф暟鎹泦鐨勫厜璋辩淮搴﹂€氬父鏄?`142 = R(71) + T(71)`锛屽搴旀棫閰嶇疆 `0.4-1.1 um`銆乣71` 涓尝闀跨偣銆?
-- `Structure_train.npy` 鏄?object array锛孨umPy 涓嶈兘鍐呭瓨鏄犲皠锛涜浆鎹㈣剼鏈細涓€娆″彧鍔犺浇涓€涓?split锛屼絾杞崲 train 鏃朵粛闇€瑕佹湇鍔″櫒鏈夎冻澶熷唴瀛樺绾宠 object 鏁扮粍銆?
-- `--num-workers` 榛樿涓?`1`銆傚綋璁剧疆涓哄ぇ浜?`1` 鏃讹紝鑴氭湰浼氭寜 shard 澶氳繘绋嬪苟琛屽啓 parquet锛涘苟琛屽墠浼氬厛鎵弿缁撴瀯 token 鏋勫缓绋冲畾 vocab銆?
-- 澶氳繘绋嬫ā寮忎笅锛屾瘡涓?worker 杩涚▼閮戒細鍔犺浇褰撳墠 split 鐨?`Structure_*.npy` object array锛屽洜姝や富鏈哄唴瀛樺崰鐢ㄤ細杩戜技闅?`num_workers` 鏀惧ぇ锛涘鏋滃唴瀛樼揣寮狅紝鍏堜粠 `4` 鎴栨洿灏忓€煎紑濮嬨€?
+- `Spectrum_*.npy` 会按行复制到 `spectrum_rt` 字段。
+- `Structure_*.npy` 会从 `Material_ThicknessNm` token 拆出 `materials` 和 `thickness_nm`。
+- 旧数据集的光谱维度通常是 `142 = R(71) + T(71)`，对应旧配置 `0.4-1.1 um`、`71` 个波长点。
+- `Structure_train.npy` 是 object array，NumPy 不能内存映射；转换脚本会一次只加载一个 split，但转换 train 时仍需要服务器有足够内存容纳该 object 数组。
+- `--num-workers` 默认为 `1`。当设置为大于 `1` 时，脚本会按 shard 多进程并行写 parquet；并行前会先扫描结构 token 构建稳定 vocab。
+- 多进程模式下，每个 worker 进程都会加载当前 split 的 `Structure_*.npy` object array，因此主机内存占用会近似随 `num_workers` 放大；如果内存紧张，先从 `4` 或更小值开始。
 
-濡傛灉鍙兂鍏堝皬瑙勬ā楠岃瘉杞崲娴佺▼锛屽彲浠ュ姞閲囨牱涓婇檺锛?
+如果只想先小规模验证转换流程，可以加采样上限：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -602,7 +591,7 @@ python -m data_gen.scripts.convert_legacy_npy_dataset \
   --num-workers 2
 ```
 
-杞崲鍚庤繍琛屽垎鏋愶細
+转换后运行分析：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -617,7 +606,7 @@ python data_gen/scripts/run_analyze_dataset.py \
   --device auto
 ```
 
-濡傛灉鏈嶅姟鍣ㄦ病鏈?RAPIDS / cudf / cuml锛屽彧鍒嗘瀽缁撴瀯鍒嗗竷锛?
+如果服务器没有 RAPIDS / cudf / cuml，只分析结构分布：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -631,24 +620,24 @@ python data_gen/scripts/run_analyze_dataset.py \
   --disable-spectrum-analysis
 ```
 
-#### Step 4.3: 鐢熸垚 PSO 琛ュ厖鏁版嵁闆?
+#### Step 4.3: 生成 PSO 补充数据集
 
-PSO 琛ュ厖鏁版嵁闆嗙敤浜庡洿缁曟寚瀹氱洰鏍囧惛鏀惰氨鎼滅储鐩歌繎缁撴瀯锛屼綔涓洪殢鏈虹敓鎴愭暟鎹泦涔嬪鐨勫畾鍚戣ˉ鍏呮暟鎹€傞粯璁ょ洰鏍囧寘鎷細
+PSO 补充数据集用于围绕指定目标吸收谱搜索相近结构，作为随机生成数据集之外的定向补充数据。默认目标包括：
 
-- `broad_3_13`锛歚3-13 um` 鍚告敹涓?1锛屽叾浣欎负 0銆?
-- `band_5_8`锛歚5-8 um` 鍚告敹涓?1锛屽叾浣欎负 0銆?
-- `dual_3_5_8_13`锛歚3-5 um` 鍜?`8-13 um` 鍚告敹涓?1锛屽叾浣欎负 0銆?
-- `notch_3_5`锛歚3-5 um` 鍚告敹涓?0锛屽叾浣欎负 1銆?
-- 娲涗鸡鍏圭獎甯︾洰鏍囷細`2.1-14.9 um`锛屼腑蹇冩闀?`0.1 um`锛屽崐楂樺 `0.02 um`銆?
+- `broad_3_13`：`3-13 um` 吸收为 1，其余为 0。
+- `band_5_8`：`5-8 um` 吸收为 1，其余为 0。
+- `dual_3_5_8_13`：`3-5 um` 和 `8-13 um` 吸收为 1，其余为 0。
+- `notch_3_5`：`3-5 um` 吸收为 0，其余为 1。
+- 洛伦兹窄带目标：`2.1-14.9 um`，中心步长 `0.1 um`，半高宽 `0.02 um`。
 
-鍗曡繘绋嬭繍琛岋細
+单进程运行：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python -m pso.scripts.run_pso_dataset --config pso/configs/pso_supplement.yaml
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/data_gen/pso_supplement/shards/shard-00000.parquet`
 - `outputs/our_work/data_gen/pso_supplement/splits/split_manifest.json`
@@ -657,33 +646,33 @@ python -m pso.scripts.run_pso_dataset --config pso/configs/pso_supplement.yaml
 - `outputs/our_work/data_gen/pso_supplement/stats/summary.json`
 - `outputs/our_work/data_gen/pso_supplement/stats/search_summary.json`
 
-璇存槑锛?
+说明：
 
-- 瀹夎 `tqdm` 鍚庯紝杩愯杩囩▼涓細鏄剧ず `pso rank <rank>/<world_size>` 鐨?target/layer 绾у埆杩涘害鏉°€?
-- PSO 缁撴瀯鍙傛暟涓庝富鏁版嵁鐢熸垚閾捐矾淇濇寔涓€鑷达細`5-10` 灞傘€乣10-500 nm`銆佸帤搴︽闀?`10 nm`銆佹潗鏂欐潵鑷?`_shared/database/`銆?
-- 杈撳嚭鍏夎氨浠嶇劧鏄?`[R..., T...]`锛屽叡 `2048` 缁达紱鐩爣鍚告敹璋卞彧鐢ㄤ簬 PSO 鎼滅储鏃惰绠?MSE銆?
-- 鍙湁 `absorption MSE < search.acceptance_mse_threshold` 鐨勭粨鏋勪細琚啓鍏ユ暟鎹泦銆?
-- 鍐欏嚭鍓嶄細鎸夊畬鏁?`structure_tokens` 鍋氬叏灞€鍘婚噸銆?
-- 璇ヨˉ鍏呮暟鎹粯璁ゅ啓鍏ョ嫭绔嬬洰褰曪紝涓嶄細鑷姩娣峰叆闅忔満鏁版嵁闆嗭紱鍚庣画璁粌娣峰悎姣斾緥闇€瑕佸湪璁粌鏁版嵁鍔犺浇渚у崟鐙畾涔夈€?
+- 安装 `tqdm` 后，运行过程中会显示 `pso rank <rank>/<world_size>` 的 target/layer 级别进度条。
+- PSO 结构参数与主数据生成链路保持一致：`5-10` 层、`10-500 nm`、厚度步长 `10 nm`、材料来自 `_shared/database/`。
+- 输出光谱仍然是 `[R..., T...]`，共 `2048` 维；目标吸收谱只用于 PSO 搜索时计算 MSE。
+- 只有 `absorption MSE < search.acceptance_mse_threshold` 的结构会被写入数据集。
+- 写出前会按完整 `structure_tokens` 做全局去重。
+- 该补充数据默认写入独立目录，不会自动混入随机数据集；后续训练混合比例需要在训练数据加载侧单独定义。
 
-澶氳繘绋嬫媶鍒嗚繍琛岋細
+多进程拆分运行：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=4 -m pso.scripts.run_pso_dataset --config pso/configs/pso_supplement.yaml
 ```
 
-浣跨敤澶氳繘绋嬪墠锛岄渶瑕佸厛鎶?`pso/configs/pso_supplement.yaml` 閲岀殑 `distributed.enabled` 鏀规垚 `true`銆傚杩涚▼浼氭寜 `target/layer` work items 鎷嗗垎浠诲姟锛屽苟鍒嗗埆鍐欏埌锛?
+使用多进程前，需要先把 `pso/configs/pso_supplement.yaml` 里的 `distributed.enabled` 改成 `true`。多进程会按 `target/layer` work items 拆分任务，并分别写到：
 
 - `outputs/our_work/data_gen/pso_supplement/rank00`
 - `outputs/our_work/data_gen/pso_supplement/rank01`
 - `outputs/our_work/data_gen/pso_supplement/rankXX`
 
-褰撳墠鐗堟湰杩樻病鏈夊唴缃法 rank 鍚堝苟涓庝簩娆″幓閲嶈剼鏈紱姝ｅ紡娣峰叆璁粌鍓嶏紝寤鸿鍏堝鍚?`rankXX` 鐩綍鍋氬悎骞跺拰鍏ㄥ眬鍘婚噸銆?
+当前版本还没有内置跨 rank 合并与二次去重脚本；正式混入训练前，建议先对各 `rankXX` 目录做合并和全局去重。
 
-#### Step 4.4: 鍒嗘瀽 PSO 琛ュ厖鏁版嵁闆?
+#### Step 4.4: 分析 PSO 补充数据集
 
-PSO 鏁版嵁闆嗙敓鎴愬畬鎴愬悗锛屽彲浠ュ崟鐙繍琛屽垎鏋愬拰鍙鍖栵細
+PSO 数据集生成完成后，可以单独运行分析和可视化：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -697,7 +686,7 @@ python -m pso.analysis.run_analyze_pso \
   --max-spectrum-groups 100
 ```
 
-濡傛灉瑕佺粰鎵€鏈?`target/layer` 缁勫悎閮界敾鍏夎氨鍥撅紝鎶?`--max-spectrum-groups` 鏀规垚 `-1`锛?
+如果要给所有 `target/layer` 组合都画光谱图，把 `--max-spectrum-groups` 改成 `-1`：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -708,7 +697,7 @@ python -m pso.analysis.run_analyze_pso \
   --max-spectrum-groups -1
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/pso_analysis/pso_supplement/summary.json`
 - `outputs/our_work/pso_analysis/pso_supplement/analysis_manifest.json`
@@ -724,31 +713,31 @@ python -m pso.analysis.run_analyze_pso \
 - `outputs/our_work/pso_analysis/pso_supplement/figures/spectra/<target_id>/layer_<layer_count>_mean_band.png`
 - `outputs/our_work/pso_analysis/pso_supplement/figures/lorentzian/center_vs_best_mse.png`
 
-#### Step 4.5: 鐢熸垚 GA 浼樼瑙ｆ棌琛ュ厖鏁版嵁闆?
+#### Step 4.5: 生成 GA 优秀解族补充数据集
 
-GA 琛ュ厖鏁版嵁闆嗙敤浜庝粠宸茬煡浼樼缁撴瀯鍑哄彂鍋氬眬閮ㄥ彉寮傚拰浜ゅ弶锛屾悳绱㈡弧瓒抽槇鍊肩殑鐩歌繎浼樼瑙ｆ棌銆傚綋鍓嶅彧鍖呭惈涓夌被鐩爣锛?
+GA 补充数据集用于从已知优秀结构出发做局部变异和交叉，搜索满足阈值的相近优秀解族。当前只包含三类目标：
 
-- `broad_3_13_high`锛歚3-13 um` 楂樺惛鏀讹紝鍏朵粬娉㈡涓嶅弬涓?loss銆傜瀛愮粨鏋勶細`YbF3(870) / ZnS(480) / Si(280) / Bi(20) / Ge(130) / Bi(820) / Au(100)`銆?
-- `mid_5_8_high`锛歚3-5 um` 浣庡惛鏀躲€乣5-8 um` 楂樺惛鏀躲€乣8-13 um` 浣庡惛鏀讹紝鍏朵粬娉㈡涓嶅弬涓?loss銆傜瀛愮粨鏋勶細`Si(250) / SiO2(120) / Ge(500) / MgF2(850) / Ge(110) / MgF2(500) / Bi(130) / Au(100)`銆?
-- `dual_3_5_8_13_high`锛歚3-5 um` 楂樺惛鏀躲€乣5-8 um` 浣庡惛鏀躲€乣8-13 um` 楂樺惛鏀讹紝鍏朵粬娉㈡涓嶅弬涓?loss銆傜瀛愮粨鏋勶細`SiO2(150) / MgF2(500) / Si(500) / ZnS(450) / Ge(490) / MgF2(280) / Si(320) / Bi(250) / Au(100)`銆?
+- `broad_3_13_high`：`3-13 um` 高吸收，其他波段不参与 loss。种子结构：`YbF3(870) / ZnS(480) / Si(280) / Bi(20) / Ge(130) / Bi(820) / Au(100)`。
+- `mid_5_8_high`：`3-5 um` 低吸收、`5-8 um` 高吸收、`8-13 um` 低吸收，其他波段不参与 loss。种子结构：`Si(250) / SiO2(120) / Ge(500) / MgF2(850) / Ge(110) / MgF2(500) / Bi(130) / Au(100)`。
+- `dual_3_5_8_13_high`：`3-5 um` 高吸收、`5-8 um` 低吸收、`8-13 um` 高吸收，其他波段不参与 loss。种子结构：`SiO2(150) / MgF2(500) / Si(500) / ZnS(450) / Ge(490) / MgF2(280) / Si(320) / Bi(250) / Au(100)`。
 
-鍗曡繘绋嬭繍琛岋細
+单进程运行：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python -m ga.scripts.run_ga_dataset --config ga/configs/ga_seeded_absorbers.yaml
 ```
 
-GA 涓诲叆鍙ｇ幇鍦ㄧ洿鎺ユ敮鎸?`targets.tasks` 鑷畾涔変换鍔″垪琛細
-- 榛樿閰嶇疆 [ga/configs/ga_seeded_absorbers.yaml](/O:/Optics%20Code/OptoGPT-GRPO/ga/configs/ga_seeded_absorbers.yaml) 宸叉樉寮忓啓鍏?3 涓?seeded 浠诲姟銆?
-- 鑷畾涔変换鍔℃ā鏉胯 [ga/configs/ga_custom_tasks.yaml](/O:/Optics%20Code/OptoGPT-GRPO/ga/configs/ga_custom_tasks.yaml)銆?
-- 姣忎釜浠诲姟鍙湪 `bands` 涓０鏄庨珮鍚告敹/浣庡惛鏀舵尝娈碉紱鏈０鏄庣殑娉㈡涓嶄細杩涘叆 loss銆?
-- 鑻ユ彁渚?`seed_tokens`锛岃剼鏈細鍏堟鏌ュ帤搴﹀苟鎷嗗垎鍒濆 seed 涓?`>500 nm` 鐨勫眰锛涜嫢涓嶆彁渚涳紝鍒欐寜 `random_init` 鍦ㄥ悎娉曟潗鏂欏拰鍘氬害缃戞牸涓婇殢鏈虹敓鎴愬垵濮嬬粨鏋勩€?
-- `targets.include_ids` 鍙敤浜庡彧杩愯浠诲姟鍒楄〃涓殑閮ㄥ垎 target銆?
+GA 主入口现在直接支持 `targets.tasks` 自定义任务列表：
+- 默认配置 [ga/configs/ga_seeded_absorbers.yaml](/O:/Optics%20Code/OptoGPT-GRPO/ga/configs/ga_seeded_absorbers.yaml) 已显式写入 3 个 seeded 任务。
+- 自定义任务模板见 [ga/configs/ga_custom_tasks.yaml](/O:/Optics%20Code/OptoGPT-GRPO/ga/configs/ga_custom_tasks.yaml)。
+- 每个任务可在 `bands` 中声明高吸收/低吸收波段；未声明的波段不会进入 loss。
+- 若提供 `seed_tokens`，脚本会先检查厚度并拆分初始 seed 中 `>500 nm` 的层；若不提供，则按 `random_init` 在合法材料和厚度网格上随机生成初始结构。
+- `targets.include_ids` 可用于只运行任务列表中的部分 target。
 
-褰撳墠 GA 閲囩敤鍥哄畾棰勭畻鎼滅储銆傛瘡涓?target 浼氳窇瀹?`search.restart_count * search.generations_per_restart`锛屼笉浼氬洜涓烘牱鏈暟閲忚揪鍒颁笂闄愬氨鎻愬墠鍋滄锛涘€欓€夋睜婊″悗锛屾柊鐨勬洿浼樻牱鏈細鏇挎崲褰撳墠杈冨樊鏍锋湰銆?
+当前 GA 采用固定预算搜索。每个 target 会跑完 `search.restart_count * search.generations_per_restart`，不会因为样本数量达到上限就提前停止；候选池满后，新的更优样本会替换当前较差样本。
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/data_gen/ga_seeded_absorbers/shards/shard-00000.parquet`
 - `outputs/our_work/data_gen/ga_seeded_absorbers/splits/split_manifest.json`
@@ -759,28 +748,28 @@ GA 涓诲叆鍙ｇ幇鍦ㄧ洿鎺ユ敮鎸?`targets.tasks` 鑷畾涔変换鍔
 - `outputs/our_work/data_gen/ga_seeded_absorbers/figures/*_accepted_absorption_topk.png`
 - `outputs/our_work/data_gen/ga_seeded_absorbers/figures/*_mse_hist.png`
 
-璇存槑锛?
+说明：
 
-- GA 鍥哄畾浣跨敤姣忎釜绉嶅瓙缁撴瀯鐨勫眰鏁帮紝鍦ㄥ悓灞傛暟鍐呭仛鏉愭枡鍙樺紓銆佸帤搴﹀彉寮傘€佺簿鑻变繚鐣欍€侀敠鏍囪禌閫夋嫨鍜?layer-wise crossover銆?
-- 鎺ュ彈鏉′欢鏄?masked absorption MSE `< 0.005`锛屾瘡涓洰鏍囬粯璁ゆ敹闆?`100` 鏉″叏灞€鍘婚噸缁撴瀯銆?
-- 榛樿鏉愭枡闆嗗悎涓?PSO 涓€鑷达紝浣跨敤 `database_dir` 涓嬬殑鍏ㄩ儴鏉愭枡锛涘鏋滃彧鎯冲洿缁曞凡鐭ヤ紭绉€瑙ｇ殑鏉愭枡灞€閮ㄦ悳绱紝鍙湪 YAML 閲屾樉寮忓啓 `materials`銆?
-- 宸茬煡浼樼瑙ｅ寘鍚?`820/850/870 nm` 灞傦紱榛樿閰嶇疆浼氭妸杩欎簺 seed 鍘氬害棰濆鍔犲叆鍙€夊帤搴﹂泦鍚堛€傝嫢瑕佷弗鏍奸檺鍒跺埌 `10-500 nm`锛屽皢 `data.include_seed_thickness_values` 鏀逛负 `false`锛屼絾绉嶅瓙浼氳杩戦偦鍘氬害瑁佸壀锛屾悳绱㈣川閲忓彲鑳戒笅闄嶃€?
-- 杈撳嚭鍏夎氨浠嶇劧鏄?`[R..., T...]`锛屽叡 `2048` 缁达紱鐩爣鍚告敹璋卞彧鐢ㄤ簬 GA 鎼滅储鏃惰绠?masked MSE銆?
+- GA 固定使用每个种子结构的层数，在同层数内做材料变异、厚度变异、精英保留、锦标赛选择和 layer-wise crossover。
+- 接受条件是 masked absorption MSE `< 0.005`，每个目标默认收集 `100` 条全局去重结构。
+- 默认材料集合与 PSO 一致，使用 `database_dir` 下的全部材料；如果只想围绕已知优秀解的材料局部搜索，可在 YAML 里显式写 `materials`。
+- 已知优秀解包含 `820/850/870 nm` 层；默认配置会把这些 seed 厚度额外加入可选厚度集合。若要严格限制到 `10-500 nm`，将 `data.include_seed_thickness_values` 改为 `false`，但种子会被近邻厚度裁剪，搜索质量可能下降。
+- 输出光谱仍然是 `[R..., T...]`，共 `2048` 维；目标吸收谱只用于 GA 搜索时计算 masked MSE。
 
-澶氳繘绋嬫媶鍒嗚繍琛岋細
+多进程拆分运行：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=3 -m ga.scripts.run_ga_dataset --config ga/configs/ga_seeded_absorbers.yaml
 ```
 
-浣跨敤澶氳繘绋嬪墠锛岄渶瑕佸厛鎶?`ga/configs/ga_seeded_absorbers.yaml` 閲岀殑 `distributed.enabled` 鏀规垚 `true`銆備笁涓?target 浼氭寜 rank 鎷嗗垎锛屽苟鍒嗗埆鍐欏埌锛?
+使用多进程前，需要先把 `ga/configs/ga_seeded_absorbers.yaml` 里的 `distributed.enabled` 改成 `true`。三个 target 会按 rank 拆分，并分别写到：
 
 - `outputs/our_work/data_gen/ga_seeded_absorbers/rank00`
 - `outputs/our_work/data_gen/ga_seeded_absorbers/rank01`
 - `outputs/our_work/data_gen/ga_seeded_absorbers/rank02`
 
-濡傛灉鍙兂浠庢煇涓?parquet shard 閲岄殢鏈烘娊鏍风敾鍥撅紝渚嬪浠?`shard-00000.parquet` 闅忔満鎶?10 鏉?`3-13 um` 鐩爣鍏夎氨锛?
+如果只想从某个 parquet shard 里随机抽样画图，例如从 `shard-00000.parquet` 随机抽 10 条 `3-13 um` 目标光谱：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -792,12 +781,12 @@ python -m ga.scripts.plot_random_parquet_spectra \
   --target-id broad_3_13_high
 ```
 
-璇ュ懡浠や細鍚屾椂鍐欏嚭锛?
+该命令会同时写出：
 
 - `outputs/our_work/data_gen/ga_seeded_absorbers/figures/random_10_broad_3_13_absorption.png`
 - `outputs/our_work/data_gen/ga_seeded_absorbers/figures/random_10_broad_3_13_absorption.selected.json`
 
-#### Step 5: 鍚姩棰勮缁?
+#### Step 5: 启动预训练
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -806,15 +795,15 @@ python pretrain/scripts/run_pretrain.py \
   --train-config pretrain/configs/train/base_train.yaml
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
 {'loss': ..., 'grad_norm': ..., 'learning_rate': ..., 'epoch': ...}
 {'eval_loss': ..., 'eval_token_accuracy': ..., 'eval_runtime': ..., 'epoch': ...}
-100%|鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅| ...
+100%|██████████| ...
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/pretrain/base_train/checkpoint-*`
 - `outputs/our_work/pretrain/base_train/checkpoint-*/config.json`
@@ -832,21 +821,21 @@ python pretrain/scripts/run_pretrain.py \
 - `outputs/our_work/pretrain/base_train/plots/eval_token_accuracy.png`
 - `outputs/our_work/pretrain/base_train/plots/overview.png`
 
-浣犲彲浠ユ鏌ワ細
+你可以检查：
 
 ```bash
 ls outputs/our_work/pretrain/base_train
 ls outputs/our_work/pretrain/base_train/checkpoint-1
 ```
 
-TensorBoard 瀹炴椂鏌ョ湅鍛戒护锛?
+TensorBoard 实时查看命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 tensorboard --logdir outputs/our_work/pretrain/base_train/tensorboard --bind_all
 ```
 
-4 鍗?A100 姝ｅ紡鍛戒护锛?
+4 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -855,9 +844,9 @@ torchrun --nproc_per_node=4 pretrain/scripts/run_pretrain.py \
   --train-config pretrain/configs/train/a100_4gpu.yaml
 ```
 
-4 鍗￠粯璁よ缁冮厤缃鐐癸細
+4 卡默认训练配置要点：
 
-- 璇诲彇鏁版嵁闆嗭細`outputs/our_work/data_gen/a100_4gpu`
+- 读取数据集：`outputs/our_work/data_gen/a100_4gpu`
 - `per_device_train_batch_size: 512`
 - `per_device_eval_batch_size: 512`
 - `num_train_epochs: 100`
@@ -870,7 +859,7 @@ torchrun --nproc_per_node=4 pretrain/scripts/run_pretrain.py \
 - `save_steps: 5000`
 - `save_total_limit: 3`
 
-8 鍗?A100 姝ｅ紡鍛戒护锛?
+8 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
@@ -879,14 +868,14 @@ torchrun --nproc_per_node=8 pretrain/scripts/run_pretrain.py \
   --train-config pretrain/configs/train/a100_8gpu.yaml
 ```
 
-#### Step 6: 杩愯鐙珛璇勬祴
+#### Step 6: 运行独立评测
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python pretrain/scripts/run_eval.py \
   --checkpoint-dir outputs/our_work/pretrain/base_train \
   --dataset-dir outputs/our_work/data_gen/v1 \
-  --database-dir database \
+  --database-dir _shared/database \
   --split val \
   --max-samples 256 \
   --max-new-tokens 10 \
@@ -894,10 +883,10 @@ python pretrain/scripts/run_eval.py \
   --output-json outputs/our_work/eval/latest_eval.json
 ```
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
-our_work eval:  42%|鈻堚枅鈻堚枅鈻?    | 108/256 [00:xx<00:xx, ... sample/s, valid=..., exact=..., last_rmse=...]
+eval:  42%|████▏     | 108/256 [00:xx<00:xx, ... sample/s, valid=..., exact=..., last_rmse=...]
 {
   "summary": {
     "sample_count": 256,
@@ -909,29 +898,29 @@ our_work eval:  42%|鈻堚枅鈻堚枅鈻?    | 108/256 [00:xx<00:xx, ... sample
 }
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/eval/base_train/eval_runs/<timestamp>/summary.json`
 - `outputs/our_work/eval/base_train/eval_runs/<timestamp>/results.jsonl`
 - `outputs/our_work/eval/latest_eval.json`
 
-濡傛灉涓嶅姞 `--disable-plots`锛岃繕浼氬嚭鐜帮細
+如果不加 `--disable-plots`，还会出现：
 
 - `outputs/our_work/eval/base_train/eval_runs/<timestamp>/plots/*.png`
 - `outputs/our_work/eval/base_train/eval_runs/<timestamp>/samples/*.png`
 
-#### Step 7: 杩愯 our_work 杞婚噺 GRPO
+#### Step 7: 运行轻量 GRPO
 
-`rl` 褰撳墠鏄竴涓交閲忋€佽缁冨氨缁殑 GRPO 瀛愮郴缁燂紝鎺ュ彛椋庢牸灏介噺璐磋繎 `Transformers + torchrun`锛屼絾娌℃湁寮曞叆閲嶅瀷澶栭儴 RL 骞冲彴銆?
+`rl` 当前是一个轻量、训练就绪的 GRPO 子系统，接口风格尽量贴近 `Transformers + torchrun`，但没有引入重型外部 RL 平台。
 
-鍗曟満鍗曞崱 smoke锛?
+单机单卡 smoke：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python rl/scripts/run_grpo.py --config rl/configs/grpo/base_grpo.yaml
 ```
 
-鍩虹 RL 閰嶇疆瑕佺偣锛?
+基础 RL 配置要点：
 
 - `model.checkpoint_dir: outputs/our_work/pretrain/base_train`
 - `data.dataset_dir: outputs/our_work/data_gen/v1`
@@ -942,14 +931,14 @@ python rl/scripts/run_grpo.py --config rl/configs/grpo/base_grpo.yaml
 - `training.lr_scheduler_type: cosine`
 - `training.warmup_ratio: 0.01`
 
-4 鍗?A100 姝ｅ紡鍛戒护锛?
+4 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=4 rl/scripts/run_grpo.py --config rl/configs/grpo/a100_4gpu.yaml
 ```
 
-4 鍗?RL 閰嶇疆瑕佺偣锛?
+4 卡 RL 配置要点：
 
 - `model.checkpoint_dir: outputs/our_work/pretrain/a100_4gpu`
 - `data.dataset_dir: outputs/our_work/data_gen/a100_4gpu`
@@ -964,14 +953,14 @@ torchrun --nproc_per_node=4 rl/scripts/run_grpo.py --config rl/configs/grpo/a100
 - `training.eval_steps: 1000`
 - `training.save_steps: 1000`
 
-8 鍗?A100 姝ｅ紡鍛戒护锛?
+8 卡 A100 正式命令：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 torchrun --nproc_per_node=8 rl/scripts/run_grpo.py --config rl/configs/grpo/a100_8gpu.yaml
 ```
 
-8 鍗?RL 閰嶇疆瑕佺偣锛?
+8 卡 RL 配置要点：
 
 - `model.checkpoint_dir: outputs/our_work/pretrain/a100_8gpu`
 - `data.dataset_dir: outputs/our_work/data_gen/a100_8gpu`
@@ -986,13 +975,13 @@ torchrun --nproc_per_node=8 rl/scripts/run_grpo.py --config rl/configs/grpo/a100
 - `training.eval_steps: 1000`
 - `training.save_steps: 1000`
 
-鍏稿瀷缁堢杈撳嚭锛?
+典型终端输出：
 
 ```text
-our_work grpo: 100%|鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅| ... [loss=..., reward=..., valid=...]
+grpo: 100%|██████████| ... [loss=..., reward=..., valid=...]
 ```
 
-璇ユ楠ゅ畬鎴愬悗搴斿嚭鐜帮細
+该步骤完成后应出现：
 
 - `outputs/our_work/rl/<run-name>/metrics/train_metrics.jsonl`
 - `outputs/our_work/rl/<run-name>/metrics/eval_metrics.jsonl`
@@ -1006,28 +995,28 @@ our_work grpo: 100%|鈻堚枅鈻堚枅鈻堚枅鈻堚枅鈻堚枅| ... [loss=...
 - `outputs/our_work/rl/<run-name>/tensorboard/`
 - `outputs/our_work/rl/<run-name>/checkpoints/checkpoint-*`
 
-濡傞渶瀹炴椂鏌ョ湅 RL 鏍囬噺锛屽彲鎵ц锛?
+如需实时查看 RL 标量，可执行：
 
 ```bash
 tensorboard --logdir outputs/our_work/rl/<run-name>/tensorboard --bind_all
 ```
 
-### 5. 鍙儴缃插凡鏈?checkpoint 鍋氳瘎娴?
-濡傛灉浣犱笉鎯冲湪鏈嶅姟鍣ㄤ笂閲嶈锛屽彧鎯宠瘎娴嬪凡鏈夋ā鍨嬶紝闇€瑕佸悓姝ワ細
+### 5. 只部署已有 checkpoint 做评测
+如果你不想在服务器上重训，只想评测已有模型，需要同步：
 
-- 浠撳簱浠ｇ爜
+- 仓库代码
 - `database/`
-- 宸茬敓鎴愮殑鏁版嵁闆嗙洰褰曪紝渚嬪 `outputs/our_work/data_gen/v1`
-- 宸茶缁冪殑 checkpoint 鐩綍锛屼緥濡?`outputs/our_work/pretrain/base_train`
+- 已生成的数据集目录，例如 `outputs/our_work/data_gen/v1`
+- 已训练的 checkpoint 目录，例如 `outputs/our_work/pretrain/base_train`
 
-鐒跺悗鐩存帴杩愯锛?
+然后直接运行：
 
 ```bash
 cd /srv/OptoGPT-GRPO
 python pretrain/scripts/run_eval.py \
   --checkpoint-dir outputs/our_work/pretrain/base_train \
   --dataset-dir outputs/our_work/data_gen/v1 \
-  --database-dir database \
+  --database-dir _shared/database \
   --split val \
   --max-samples 256 \
   --max-new-tokens 10 \
@@ -1035,50 +1024,50 @@ python pretrain/scripts/run_eval.py \
   --output-json outputs/our_work/eval/latest_eval.json
 ```
 
-### 6. 甯歌闂
+### 6. 常见问题
 - `database_path must point to an existing directory`
-  - 鍘熷洜锛氭湇鍔″櫒娌″悓姝?`database/`
-  - 妫€鏌ワ細`ls database`
+  - 原因：服务器没同步 `database/`
+  - 检查：`ls _shared/database`
 - `No checkpoint directory found under ...`
-  - 鍘熷洜锛氳缁冪洰褰曢噷娌℃湁 `checkpoint-*`
-  - 妫€鏌ワ細`ls outputs/our_work/pretrain/base_train`
+  - 原因：训练目录里没有 `checkpoint-*`
+  - 检查：`ls outputs/our_work/pretrain/base_train`
 - `spectrum_dim mismatch`
-  - 鍘熷洜锛歚base_gpt.yaml` 閲岀殑 `model.spectrum_dim` 涓庢暟鎹泦 `2 * num_points` 涓嶄竴鑷?
+  - 原因：`base_gpt.yaml` 里的 `model.spectrum_dim` 与数据集 `2 * num_points` 不一致
 - `num_points mismatch`
-  - 鍘熷洜锛歚run_eval.py` 鍛戒护琛屼紶鍏ョ殑 `--num-points` 涓?checkpoint 鐨?`spectrum_dim` 涓嶄竴鑷?
-- `read_excel` / parquet 鐩稿叧鎶ラ敊
-  - 鍘熷洜锛氱己灏?`openpyxl` 鎴?`pyarrow`
+  - 原因：`run_eval.py` 命令行传入的 `--num-points` 与 checkpoint 的 `spectrum_dim` 不一致
+- `read_excel` / parquet 相关报错
+  - 原因：缺少 `openpyxl` 或 `pyarrow`
 
-## 璇存槑
-- 褰撳墠 `physics/` 鐩存帴澶嶇敤鍘?TMM 妯″潡锛屼笉鍙﹁捣涓€濂楀疄鐜般€?
-- 褰撳墠璁粌鐩爣涓嶆槸浼犵粺 teacher forcing CE锛岃€屾槸鍩轰簬鐩爣鍏夎氨 reward 鐨?GRPO銆?
-- rollout 涓?update 鐜板湪鍏辩敤鍚屼竴 policy 瀹氫箟锛屼笉鍐嶅嚭鐜?鈥渇iltered rollout / raw scoring鈥?鐨勪笉涓€鑷淬€?
-- 褰撳墠榛樿鐨勫厜璋辫宸槸 `R/T` 鐩存帴璇樊锛屽嵆姣旇緝鎷兼帴鍚庣殑 `[R..., T...]` 鍏夎氨銆?
-- `core/` 淇濈暀鐨勪富瑕佺洰鐨勶紝鏄吋瀹规棫 OptoGPT checkpoint 鐨勫姞杞姐€?
-## our_work Eval Suite
+## 说明
+- 当前 `physics/` 直接复用原 TMM 模块，不另起一套实现。
+- 当前训练目标不是传统 teacher forcing CE，而是基于目标光谱 reward 的 GRPO。
+- rollout 与 update 现在共用同一 policy 定义，不再出现 “filtered rollout / raw scoring” 的不一致。
+- 当前默认的光谱误差是 `R/T` 直接误差，即比较拼接后的 `[R..., T...]` 光谱。
+- `core/` 保留的主要目的，是兼容旧 OptoGPT checkpoint 的加载。
+## Eval Suite
 
-鐢ㄩ€旓細
+用途：
 
-- 鍔犺浇 `pretrain` 璁粌濂界殑 checkpoint
-- 鍚屾椂璇勪及 `train + val`
-- 鍚?split 闅忔満鎶芥牱鍥哄畾鏁伴噺鏍锋湰
-- 鎵归噺鐢熸垚棰勬祴缁撴瀯
-- 鎵归噺鍥炵畻棰勬祴缁撴瀯鍏夎氨
-- 璁＄畻鐩爣鍏夎氨涓庨娴嬪厜璋辫宸?
-- 杈撳嚭姹囨€?JSON / JSONL
-- 杈撳嚭鏈€濂?/ 鏈€宸?/ 鎺ヨ繎鍧囧€艰宸牱鏈殑搴忓垪涓庡厜璋卞姣斿浘
+- 加载 `pretrain` 训练好的 checkpoint
+- 同时评估 `train + val`
+- 各 split 随机抽样固定数量样本
+- 批量生成预测结构
+- 批量回算预测结构光谱
+- 计算目标光谱与预测光谱误差
+- 输出汇总 JSON / JSONL
+- 输出最好 / 最差 / 接近均值误差样本的序列与光谱对比图
 
-杩愯鏂瑰紡锛?
+运行方式：
 
 ```bash
 python eval/scripts/run_eval_suite.py --config eval/configs/base_eval.yaml
 ```
 
-榛樿閰嶇疆鏂囦欢锛?
+默认配置文件：
 
 - `eval/configs/base_eval.yaml`
 
-涓昏閰嶇疆椤癸細
+主要配置项：
 
 - `paths.checkpoint_dir`
 - `paths.dataset_dir`
@@ -1095,16 +1084,16 @@ python eval/scripts/run_eval_suite.py --config eval/configs/base_eval.yaml
 - `plots.best_count`
 - `plots.mean_count`
 
-閲囨牱妯″紡锛?
+采样模式：
 
 - `random`
-  - 鎵弿鏁翠釜 split 鐨勬墍鏈?shard锛岀敤 reservoir sampling 鍋氫弗鏍奸殢鏈烘娊鏍?
+  - 扫描整个 split 的所有 shard，用 reservoir sampling 做严格随机抽样
 - `head_shards`
-  - 鍙壂鎻忓墠鑻ュ共涓?shard锛岄€熷害鏈€蹇紝浣嗘牱鏈彲鑳芥湁椤哄簭鍋忓樊
+  - 只扫描前若干个 shard，速度最快，但样本可能有顺序偏差
 - `shard_subset_random`
-  - 鍏堥殢鏈洪€夎嫢骞蹭釜 shard锛屽啀鍙壂鎻忚繖浜?shard锛岄€熷害鍜屼唬琛ㄦ€ф姌涓?
+  - 先随机选若干个 shard，再只扫描这些 shard，速度和代表性折中
 
-杈撳嚭鍐呭锛?
+输出内容：
 
 - `summary.json`
 - `split_summaries.json`
@@ -1120,5 +1109,3 @@ python eval/scripts/run_eval_suite.py --config eval/configs/base_eval.yaml
 - `samples/val/best/*.png`
 - `samples/val/worst/*.png`
 - `samples/val/mean/*.png`
-
-
