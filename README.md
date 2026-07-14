@@ -195,6 +195,7 @@ torch 2.x.x cuda True
 - 强化学习（4 卡）：`our_work/rl/configs/grpo/a100_4gpu.yaml`
 - 强化学习（8 卡）：`our_work/rl/configs/grpo/a100_8gpu.yaml`
 - PSO 补充数据集：`our_work/pso/configs/pso_supplement.yaml`
+- PSO 2-25 um 六波段任务：`our_work/pso/configs/pso_2_25_binary_bands.yaml`
 - GA 优秀解族补充数据集：`our_work/ga/configs/ga_seeded_absorbers.yaml`
 
 当前默认值（单卡 A100 80G + 16 CPU）：
@@ -647,6 +648,20 @@ PSO 补充数据集用于围绕指定目标吸收谱搜索相近结构，作为�
 cd /srv/OptoGPT-GRPO
 python -m our_work.pso.scripts.run_pso_dataset --config our_work/pso/configs/pso_supplement.yaml
 ```
+
+2-25 um 六波段任务使用独立配置运行：
+
+```bash
+cd /srv/OptoGPT-GRPO
+python -m our_work.pso.scripts.run_pso_dataset \
+  --config our_work/pso/configs/pso_2_25_binary_bands.yaml
+```
+
+该配置把光谱划分为 `2-3 / 3-5 / 5-8 / 8-13 / 13-16 / 16-25 um`，每段目标吸收取 `0/1`。
+默认只保留相邻状态最多变化两次的组合并排除全低吸收，共 `31` 个任务。材料通过配置白名单限制为
+`17` 种完整覆盖 `2-25 um` 的材料，具体 nk 来源记录在
+`our_work/_shared/database/SOURCES_2_25.md`。该配置仍输出 `1024 + 1024 = 2048` 维 R/T 光谱，
+但波长语义已经改变，不能与原 `2-15 um` 数据或 checkpoint 直接混用。
 
 该步骤完成后应出现：
 

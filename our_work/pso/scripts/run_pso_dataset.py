@@ -24,7 +24,13 @@ from our_work.data_gen.pipeline.token_vocab import build_token_vocab
 from our_work.data_gen.scripts.run_build_dataset import resolve_thickness_values_nm
 from our_work.pso.dataset_writer import write_pso_supplement_dataset
 from our_work.pso.search import PSOSearchConfig, TMMEvaluationConfig, make_tmm_evaluator, run_pso_search
-from our_work.pso.targets import TargetProfile, build_default_targets, build_fixed_band_targets, build_lorentzian_targets
+from our_work.pso.targets import (
+    TargetProfile,
+    build_binary_band_targets,
+    build_default_targets,
+    build_fixed_band_targets,
+    build_lorentzian_targets,
+)
 
 
 def resolve_pso_runtime_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +68,21 @@ def build_targets_from_config(wavelengths_um: np.ndarray, target_cfg: dict[str, 
                 center_max_um=float(lorentz_cfg.get("center_max_um", 14.9)),
                 center_step_um=float(lorentz_cfg.get("center_step_um", 0.1)),
                 fwhm_um=float(lorentz_cfg.get("fwhm_um", 0.02)),
+            )
+        )
+    binary_cfg = target_cfg.get("binary_bands", {})
+    if bool(binary_cfg.get("enabled", False)):
+        targets.extend(
+            build_binary_band_targets(
+                wavelengths_um,
+                band_edges_um=[float(value) for value in binary_cfg["edges_um"]],
+                max_transitions=(
+                    None
+                    if binary_cfg.get("max_transitions") is None
+                    else int(binary_cfg["max_transitions"])
+                ),
+                exclude_all_low=bool(binary_cfg.get("exclude_all_low", False)),
+                family=str(binary_cfg.get("family", "binary_band")),
             )
         )
     if not targets:

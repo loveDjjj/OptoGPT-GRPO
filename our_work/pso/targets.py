@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product
 
 import numpy as np
 
@@ -20,6 +21,63 @@ def _band_profile(wavelengths_um: np.ndarray, bands: list[tuple[float, float, fl
         mask = (wavelengths_um >= float(start_um)) & (wavelengths_um <= float(end_um))
         profile[mask] = float(value)
     return profile
+
+
+def _binary_band_profile(
+    wavelengths_um: np.ndarray,
+    band_edges_um: list[float],
+    pattern: tuple[int, ...],
+) -> np.ndarray:
+    wavelengths = np.asarray(wavelengths_um, dtype=np.float32)
+    profile = np.zeros_like(wavelengths, dtype=np.float32)
+    for band_index, value in enumerate(pattern):
+        start_um = float(band_edges_um[band_index])
+        end_um = float(band_edges_um[band_index + 1])
+        # Shared boundaries belong to the preceding interval, matching the
+        # piecewise target convention used by the GA task builder.
+        if band_index == 0:
+            mask = (wavelengths >= start_um) & (wavelengths <= end_um)
+        else:
+            mask = (wavelengths > start_um) & (wavelengths <= end_um)
+        profile[mask] = float(value)
+    return profile
+
+
+def build_binary_band_targets(
+    wavelengths_um: np.ndarray,
+    *,
+    band_edges_um: list[float],
+    max_transitions: int | None = None,
+    exclude_all_low: bool = False,
+    family: str = "binary_band",
+) -> list[TargetProfile]:
+    """Build high/low absorption targets over adjacent wavelength bands."""
+
+    edges = [float(value) for value in band_edges_um]
+    if len(edges) < 2:
+        raise ValueError("band_edges_um must contain at least two values")
+    if any(right <= left for left, right in zip(edges, edges[1:])):
+        raise ValueError("band_edges_um must be strictly increasing")
+    if max_transitions is not None and int(max_transitions) < 0:
+        raise ValueError("max_transitions must be non-negative or null")
+
+    band_count = len(edges) - 1
+    targets: list[TargetProfile] = []
+    for pattern in product((0, 1), repeat=band_count):
+        if exclude_all_low and not any(pattern):
+            continue
+        transition_count = sum(left != right for left, right in zip(pattern, pattern[1:]))
+        if max_transitions is not None and transition_count > int(max_transitions):
+            continue
+        pattern_id = "".join(str(value) for value in pattern)
+        targets.append(
+            TargetProfile(
+                target_id=f"bands_{pattern_id}",
+                family=str(family),
+                absorption=_binary_band_profile(wavelengths_um, edges, pattern),
+            )
+        )
+    return targets
 
 
 def build_fixed_band_targets(wavelengths_um: np.ndarray) -> list[TargetProfile]:

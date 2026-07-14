@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from our_work.pso.scripts.run_pso_dataset import (
+    build_targets_from_config,
     build_work_items,
     main,
     progress_work_items,
@@ -30,6 +32,26 @@ def test_resolve_pso_runtime_config_reads_thickness_range_and_search_settings(tm
     assert runtime["thickness_values_nm"] == [10, 20, 30]
     assert runtime["population_size"] == 8
     assert runtime["max_accepted_per_target_layer"] == 3
+
+
+def test_build_targets_from_config_supports_filtered_binary_bands():
+    wavelengths = np.linspace(2.0, 25.0, 128, dtype=np.float32)
+    targets = build_targets_from_config(
+        wavelengths,
+        {
+            "include_fixed": False,
+            "include_lorentzian": False,
+            "binary_bands": {
+                "enabled": True,
+                "edges_um": [2.0, 3.0, 5.0, 8.0, 13.0, 16.0, 25.0],
+                "max_transitions": 2,
+                "exclude_all_low": True,
+            },
+            "include_ids": ["bands_111111", "bands_011100"],
+        },
+    )
+
+    assert [target.target_id for target in targets] == ["bands_011100", "bands_111111"]
 
 
 def test_build_work_items_can_limit_targets_for_smoke_runs():

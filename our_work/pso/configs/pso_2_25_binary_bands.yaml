@@ -1,0 +1,85 @@
+# 2-25 um 六波段 PSO 补充数据集配置。
+# 目标波段依次为 2-3、3-5、5-8、8-13、13-16、16-25 um。
+
+seed: 42
+
+paths:
+  # 这里的 17 种材料均使用覆盖完整 2-25 um 的 nk 表，来源见数据库目录下 SOURCES_2_25.md。
+  database_dir: our_work/_shared/database
+  output_dir: outputs/our_work/data_gen/pso_2_25_binary_bands
+
+# 仅允许具有完整 2-25 um 数据覆盖的材料参与搜索；不要删除此限制后直接运行。
+materials:
+  - Ag
+  - Al
+  - Al2O3
+  - Au
+  - Cr
+  - Cu
+  - HfO2
+  - MgF2
+  - MgO
+  - Si
+  - SiO2
+  - Ta2O5
+  - Ti
+  - TiO2
+  - VO2
+  - ZnO
+  - ZnS
+
+data:
+  # 沿用现有 PSO 的结构搜索空间，避免同时改变层数和厚度语义。
+  layer_counts: [5, 6, 7, 8, 9, 10]
+  thickness_range_nm:
+    min: 10
+    max: 500
+    step: 10
+  train_ratio: 1.0
+  val_ratio: 0.0
+
+targets:
+  # 新配置只生成六波段二元组合，不混入旧固定目标或 Lorentzian 目标。
+  include_fixed: false
+  include_lorentzian: false
+  binary_bands:
+    enabled: true
+    family: binary_band_2_25
+    edges_um: [2.0, 3.0, 5.0, 8.0, 13.0, 16.0, 25.0]
+    # 仅保留相邻高低状态最多变化两次的组合，并移除信息量较低的全低目标，共 31 个任务。
+    max_transitions: 2
+    exclude_all_low: true
+  max_targets: null
+  include_ids: null
+
+search:
+  # 搜索参数沿用现有 PSO 正式配置；服务器显存不足时优先降低两个 batch_size。
+  population_size: 8192
+  iterations: 20
+  batch_size: 8192
+  max_accepted_per_target_layer: 50
+  acceptance_mse_threshold: 0.01
+  max_stagnant_iterations: 5
+  max_restarts: 5
+  inertia: 0.7
+  cognitive: 1.5
+  social: 1.5
+  device: auto
+
+tmm:
+  # 保持 1024 个采样点，因此每条输出仍为 2048 维 [R..., T...]；波长语义已变为 2-25 um。
+  wavelength_range_um: [2.0, 25.0]
+  num_points: 1024
+  incident_angle: 0.0
+  polarization: 0
+  tolerance: 0.001
+  complex_dtype: complex128
+  batch_size: 8192
+  device: auto
+
+shards:
+  records_per_shard: 50000
+
+distributed:
+  # 多进程仅按 target/layer work item 拆分，不执行 DDP。
+  enabled: false

@@ -1,6 +1,12 @@
 import numpy as np
+import pytest
 
-from our_work.pso.targets import build_default_targets, build_fixed_band_targets, build_lorentzian_targets
+from our_work.pso.targets import (
+    build_binary_band_targets,
+    build_default_targets,
+    build_fixed_band_targets,
+    build_lorentzian_targets,
+)
 
 
 def test_fixed_band_targets_match_requested_masks():
@@ -38,3 +44,29 @@ def test_default_targets_include_four_fixed_and_all_lorentzian_profiles():
         "dual_3_5_8_13",
         "notch_3_5",
     ]
+
+
+def test_binary_band_targets_keep_31_low_transition_patterns():
+    wavelengths = np.asarray([2.0, 3.0, 4.0, 6.0, 10.0, 14.0, 20.0, 25.0], dtype=np.float32)
+    targets = build_binary_band_targets(
+        wavelengths,
+        band_edges_um=[2.0, 3.0, 5.0, 8.0, 13.0, 16.0, 25.0],
+        max_transitions=2,
+        exclude_all_low=True,
+        family="binary_band_2_25",
+    )
+
+    assert len(targets) == 31
+    by_id = {target.target_id: target for target in targets}
+    assert "bands_000000" not in by_id
+    assert "bands_010101" not in by_id
+    assert "bands_010100" not in by_id
+    assert by_id["bands_011100"].family == "binary_band_2_25"
+    assert by_id["bands_011100"].absorption.tolist() == [0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+
+
+def test_binary_band_targets_validate_edges():
+    wavelengths = np.linspace(2.0, 25.0, 16, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="strictly increasing"):
+        build_binary_band_targets(wavelengths, band_edges_um=[2.0, 5.0, 5.0, 25.0])
