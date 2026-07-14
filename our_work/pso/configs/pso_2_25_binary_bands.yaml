@@ -80,6 +80,13 @@ tmm:
 shards:
   records_per_shard: 50000
 
+visualization:
+  # 搜索结束后为每个目标回算全局最佳候选，并保存 R/T/A 光谱、层结构表和 JSON。
+  enabled: true
+  output_subdir: plots/best_targets
+  dpi: 220
+  include_rt: true
+
 distributed:
   # 多进程仅按 target/layer work item 拆分，不执行 DDP。
   enabled: false

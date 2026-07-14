@@ -54,6 +54,14 @@ class TMMEvaluationConfig:
 
 
 @dataclass(frozen=True)
+class BestSearchCandidate:
+    structure_tokens: list[str]
+    target_mse: float
+    pso_seed: int
+    pso_restart_index: int
+
+
+@dataclass(frozen=True)
 class PSOSearchResult:
     accepted: list[AcceptedStructure]
     target_id: str
@@ -62,6 +70,7 @@ class PSOSearchResult:
     duplicate_accepted: int
     restarts_used: int
     shortfall: int
+    best_candidate: BestSearchCandidate | None
 
 
 Evaluator = Callable[[list[list[str]], TargetProfile], tuple[np.ndarray, list[AcceptedStructure]]]
@@ -216,6 +225,7 @@ def run_pso_search(
     total_evaluated = 0
     duplicate_accepted = 0
     restarts_used = 0
+    best_candidate: BestSearchCandidate | None = None
 
     for restart_index in range(max(1, int(config.max_restarts))):
         restarts_used += 1
@@ -247,6 +257,19 @@ def run_pso_search(
                     layer_count=layer_count,
                 )
                 scores_np, candidates = evaluator(token_groups, target)
+                if len(scores_np) != len(token_groups):
+                    raise ValueError("evaluator scores must align with token_groups")
+                finite_indices = np.flatnonzero(np.isfinite(scores_np))
+                if finite_indices.size:
+                    local_index = int(finite_indices[np.argmax(scores_np[finite_indices])])
+                    local_mse = -float(scores_np[local_index])
+                    if best_candidate is None or local_mse < best_candidate.target_mse:
+                        best_candidate = BestSearchCandidate(
+                            structure_tokens=list(token_groups[local_index]),
+                            target_mse=local_mse,
+                            pso_seed=int(config.seed) + restart_index,
+                            pso_restart_index=restart_index,
+                        )
                 score_chunks.append(scores_np)
                 total_evaluated += len(token_groups)
                 for candidate in candidates:
@@ -273,6 +296,7 @@ def run_pso_search(
                             duplicate_accepted=duplicate_accepted,
                             restarts_used=restarts_used,
                             shortfall=shortfall,
+                            best_candidate=best_candidate,
                         )
 
             scores = np.concatenate(score_chunks) if score_chunks else np.empty((0,), dtype=np.float32)
@@ -315,4 +339,5 @@ def run_pso_search(
         duplicate_accepted=duplicate_accepted,
         restarts_used=restarts_used,
         shortfall=shortfall,
+        best_candidate=best_candidate,
     )

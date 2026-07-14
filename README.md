@@ -663,6 +663,19 @@ python -m our_work.pso.scripts.run_pso_dataset \
 `our_work/_shared/database/SOURCES_2_25.md`。该配置仍输出 `1024 + 1024 = 2048` 维 R/T 光谱，
 但波长语义已经改变，不能与原 `2-15 um` 数据或 checkpoint 直接混用。
 
+该配置默认开启搜索后绘图。每个目标会从所有层数的搜索结果中选出全局最低 MSE 候选，按层数分桶做一次
+批量 TMM 回算，并输出：
+
+- `outputs/our_work/data_gen/pso_2_25_binary_bands/plots/best_targets/<target_id>.png`
+  目标吸收、最佳结构的 `R/T/A` 光谱，以及从入射侧到基底的逐层材料和厚度表。
+- `outputs/our_work/data_gen/pso_2_25_binary_bands/plots/best_targets/<target_id>.json`
+  对应结构 token、材料、厚度、MSE、seed 和 restart 信息。
+- `outputs/our_work/data_gen/pso_2_25_binary_bands/plots/best_targets/best_structures.json`
+  所有目标的最佳结构汇总和绘图状态。
+
+最佳候选会在 PSO 评分时独立记录，即使没有达到 `acceptance_mse_threshold`、未写入训练数据集，也仍可生成
+诊断图。若某目标所有候选都未通过 TMM 有效性检查，汇总文件会将其标记为 `no_valid_candidate`。
+
 该步骤完成后应出现：
 
 - `outputs/our_work/data_gen/pso_supplement/shards/shard-00000.parquet`

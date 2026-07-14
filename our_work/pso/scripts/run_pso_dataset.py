@@ -23,7 +23,13 @@ from our_work.data_gen.pipeline.material_registry import build_material_registry
 from our_work.data_gen.pipeline.token_vocab import build_token_vocab
 from our_work.data_gen.scripts.run_build_dataset import resolve_thickness_values_nm
 from our_work.pso.dataset_writer import write_pso_supplement_dataset
-from our_work.pso.search import PSOSearchConfig, TMMEvaluationConfig, make_tmm_evaluator, run_pso_search
+from our_work.pso.search import (
+    BestSearchCandidate,
+    PSOSearchConfig,
+    TMMEvaluationConfig,
+    make_tmm_evaluator,
+    run_pso_search,
+)
 from our_work.pso.targets import (
     TargetProfile,
     build_binary_band_targets,
@@ -192,6 +198,7 @@ def main(argv: list[str] | None = None) -> None:
 
     output_dir = base_output_dir if world_size == 1 else base_output_dir / f"rank{rank:02d}"
     all_accepted = []
+    best_by_target: dict[str, BestSearchCandidate] = {}
     global_seen: set[tuple[str, ...]] = set()
     search_summaries: list[dict[str, Any]] = []
     for item_index, (target_id, layer_count) in enumerate(progress_work_items(work_items, rank=rank, world_size=world_size)):
@@ -227,6 +234,10 @@ def main(argv: list[str] | None = None) -> None:
             global_seen.add(key)
             all_accepted.append(accepted)
             newly_kept += 1
+        if result.best_candidate is not None:
+            current_best = best_by_target.get(result.target_id)
+            if current_best is None or result.best_candidate.target_mse < current_best.target_mse:
+                best_by_target[result.target_id] = result.best_candidate
         search_summaries.append(
             {
                 "target_id": result.target_id,
@@ -238,6 +249,12 @@ def main(argv: list[str] | None = None) -> None:
                 "total_evaluated": result.total_evaluated,
                 "duplicate_accepted": result.duplicate_accepted,
                 "restarts_used": result.restarts_used,
+                "best_target_mse": (
+                    None if result.best_candidate is None else float(result.best_candidate.target_mse)
+                ),
+                "best_structure_tokens": (
+                    None if result.best_candidate is None else list(result.best_candidate.structure_tokens)
+                ),
             }
         )
 
@@ -253,6 +270,21 @@ def main(argv: list[str] | None = None) -> None:
         seed=seed,
     )
 
+    visualization_manifest = None
+    visualization_cfg = config.get("visualization", {})
+    if bool(visualization_cfg.get("enabled", False)):
+        from our_work.pso.visualization import save_best_target_plots
+
+        visualization_manifest = save_best_target_plots(
+            output_dir=output_dir / str(visualization_cfg.get("output_subdir", "plots/best_targets")),
+            wavelengths_um=wavelengths,
+            targets=target_by_id,
+            candidates=best_by_target,
+            tmm_config=tmm_config,
+            dpi=int(visualization_cfg.get("dpi", 220)),
+            include_rt=bool(visualization_cfg.get("include_rt", True)),
+        )
+
     summary_path = output_dir / "stats" / "search_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(
@@ -263,6 +295,7 @@ def main(argv: list[str] | None = None) -> None:
                 "work_item_count": len(work_items),
                 "accepted_count": len(all_accepted),
                 "split_manifest": manifest,
+                "visualization": visualization_manifest,
                 "search": search_summaries,
             },
             ensure_ascii=False,

@@ -85,3 +85,37 @@ def test_run_pso_search_keeps_unique_structures_below_threshold():
     assert result.accepted[0].structure_tokens == ["Ge_10"]
     assert result.shortfall == 1
     assert result.total_evaluated > 0
+    assert result.best_candidate is not None
+    assert result.best_candidate.structure_tokens == ["Ge_10"]
+    assert np.isclose(result.best_candidate.target_mse, 0.01)
+
+
+def test_run_pso_search_tracks_best_candidate_when_none_are_accepted():
+    target = TargetProfile("hard", "fixed", np.zeros((4,), dtype=np.float32))
+
+    def fake_evaluator(token_groups, target_profile):
+        return np.full((len(token_groups),), -0.2, dtype=np.float32), []
+
+    result = run_pso_search(
+        target=target,
+        material_names=["Ge"],
+        thickness_values_nm=[10],
+        layer_count=1,
+        config=PSOSearchConfig(
+            population_size=4,
+            iterations=1,
+            batch_size=2,
+            max_accepted=1,
+            acceptance_mse_threshold=0.01,
+            max_stagnant_iterations=1,
+            max_restarts=1,
+            seed=9,
+            device="cpu",
+        ),
+        evaluator=fake_evaluator,
+    )
+
+    assert result.accepted == []
+    assert result.best_candidate is not None
+    assert result.best_candidate.structure_tokens == ["Ge_10"]
+    assert np.isclose(result.best_candidate.target_mse, 0.2)
