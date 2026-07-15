@@ -29,12 +29,12 @@ materials:
   - ZnS
 
 data:
-  # 沿用现有 PSO 的结构搜索空间，避免同时改变层数和厚度语义。
+  # 保持 5-10 层，同时把单层厚度扩展到 1000 nm；20 nm 步长仍保留约 50 个离散厚度值。
   layer_counts: [5, 6, 7, 8, 9, 10]
   thickness_range_nm:
-    min: 10
-    max: 500
-    step: 10
+    min: 20
+    max: 1000
+    step: 20
   train_ratio: 1.0
   val_ratio: 0.0
 
@@ -53,14 +53,16 @@ targets:
   include_ids: null
 
 search:
-  # 搜索参数沿用现有 PSO 正式配置；服务器显存不足时优先降低两个 batch_size。
-  population_size: 8192
-  iterations: 20
-  batch_size: 8192
+  # 用更大的单轮种群扩大并行探索广度，同时减少迭代与 restart 以缩短总运行时间。
+  population_size: 16384
+  iterations: 8
+  # A100 80G 默认一次处理完整种群；显存不足时优先降到 8192，不需要减小 population_size。
+  batch_size: 16384
   max_accepted_per_target_layer: 50
-  acceptance_mse_threshold: 0.01
-  max_stagnant_iterations: 5
-  max_restarts: 5
+  # 略微放宽接收阈值，减少困难目标长期没有 accepted 样本的概率。
+  acceptance_mse_threshold: 0.015
+  max_stagnant_iterations: 3
+  max_restarts: 2
   inertia: 0.7
   cognitive: 1.5
   social: 1.5
@@ -74,7 +76,8 @@ tmm:
   polarization: 0
   tolerance: 0.001
   complex_dtype: complex128
-  batch_size: 8192
+  # 与搜索 batch 对齐以提高 A100 80G 吞吐；OOM 时可独立降到 8192。
+  batch_size: 16384
   device: auto
 
 shards:
